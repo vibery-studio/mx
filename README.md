@@ -6,10 +6,9 @@ A fast, lightweight markdown editor for the AI era. Built with Tauri 2 + Rust.
 
 | Platform | Link |
 |----------|------|
-| macOS (Apple Silicon) | [mx.dmg](https://github.com/vibery-studio/mx/releases/latest) |
-| macOS (Intel) | [mx.dmg](https://github.com/vibery-studio/mx/releases/latest) |
+| macOS | [mx.dmg](https://github.com/vibery-studio/mx/releases/latest) |
 | Windows | [mx.exe](https://github.com/vibery-studio/mx/releases/latest) |
-| Linux (deb / AppImage) | [mx](https://github.com/vibery-studio/mx/releases/latest) |
+| Linux | [mx.deb / .AppImage](https://github.com/vibery-studio/mx/releases/latest) |
 
 > All downloads on the [Releases](https://github.com/vibery-studio/mx/releases) page.
 
