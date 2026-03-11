@@ -2,6 +2,17 @@
 
 A fast, lightweight markdown editor for the AI era. Built with Tauri 2 + Rust.
 
+## Download
+
+| Platform | Link |
+|----------|------|
+| macOS (Apple Silicon) | [mx.dmg](https://github.com/vibery-studio/mx/releases/latest) |
+| macOS (Intel) | [mx.dmg](https://github.com/vibery-studio/mx/releases/latest) |
+| Windows | [mx.exe](https://github.com/vibery-studio/mx/releases/latest) |
+| Linux (deb / AppImage) | [mx](https://github.com/vibery-studio/mx/releases/latest) |
+
+> All downloads on the [Releases](https://github.com/vibery-studio/mx/releases) page.
+
 ## Why mx?
 
 MacDown stopped getting updates and never supported Mermaid diagrams. Meanwhile, working with AI means opening dozens of markdown files every day — but you shouldn't need to "create a vault" just to read a `.md` file. mx is a simple editor that opens any markdown file instantly with live preview, Mermaid, KaTeX, and word counting. No vault. No config. Just open and go.
@@ -18,41 +29,18 @@ MacDown stopped getting updates and never supported Mermaid diagrams. Meanwhile,
 - **Resizable split** — drag divider between editor and preview
 - **Keyboard-first** — `Cmd+O` open, `Cmd+S` save, `Cmd+P` preview, `Cmd+E` read mode
 
-## Tech Stack
+## Development
 
-| Layer | Technology |
-|-------|-----------|
-| Shell | Tauri 2 |
-| Frontend | Vite + TypeScript |
-| Editor | CodeMirror 6 |
-| Preview | markdown-it + KaTeX + Mermaid |
-| Backend | Rust |
-| Theme | Catppuccin Mocha |
-
-## Getting Started
-
-### Prerequisites
-
-- [Node.js](https://nodejs.org/) (18+)
-- [Rust](https://rustup.rs/)
-- [Tauri CLI](https://v2.tauri.app/start/prerequisites/)
-
-### Development
+For contributors — requires Node.js 18+, Rust, and [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-### Build
-
-```bash
-npm run tauri build
-```
-
 ### PDF Export (optional)
 
-Requires [Pandoc](https://pandoc.org/) and a LaTeX distribution (e.g., MacTeX):
+Requires [Pandoc](https://pandoc.org/) and a LaTeX distribution:
 
 ```bash
 brew install pandoc
