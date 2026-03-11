@@ -2,6 +2,8 @@
 
 A fast, lightweight markdown editor for the AI era. Built with Tauri 2 + Rust.
 
+**Coming from [MacDown](https://macdown.uranusjr.com/)?** MacDown has been abandoned since 2020 — no Mermaid support, no Apple Silicon build, no updates. mx picks up where MacDown left off: same simplicity, but with modern features like Mermaid diagrams, KaTeX math, YAML frontmatter, and a fraction of the bundle size.
+
 ## Download
 
 | Platform | Link |
@@ -14,16 +16,31 @@ A fast, lightweight markdown editor for the AI era. Built with Tauri 2 + Rust.
 
 ## Why mx?
 
-MacDown stopped getting updates and never supported Mermaid diagrams. Meanwhile, working with AI means opening dozens of markdown files every day — but you shouldn't need to "create a vault" just to read a `.md` file. mx is a simple editor that opens any markdown file instantly with live preview, Mermaid, KaTeX, and word counting. No vault. No config. Just open and go.
+Working with AI means opening dozens of markdown files every day. You need a fast editor that just works — not a vault-based system like Obsidian, not an abandoned app like MacDown. mx opens any `.md` file instantly with live preview. No vault. No config. Just open and go.
+
+### mx vs MacDown
+
+| | mx | MacDown |
+|--|-----|---------|
+| Status | Active | Abandoned (2020) |
+| Mermaid diagrams | Yes | No |
+| KaTeX math | Yes | MathJax (slow) |
+| YAML frontmatter | Rendered | Raw text |
+| Apple Silicon | Native | Rosetta only |
+| Bundle size | ~8 MB | ~30 MB |
+| PDF export | Pandoc + Mermaid | Broken |
+| File associations | .md, .yaml, .json, .txt | .md only |
+| Cross-platform | macOS, Windows, Linux | macOS only |
 
 ## Features
 
 - **Live split preview** — markdown-it with syntax highlighting
 - **Mermaid diagrams** — rendered inline, dark theme
 - **KaTeX math** — inline `$...$` and display `$$...$$`
+- **YAML frontmatter** — rendered as styled metadata table
 - **Word & character count** — real-time in status bar
 - **File sidebar** — browse directories with emoji icons
-- **Drag & drop** — drop any `.md` file to open
+- **Drag & drop** — drop any .md, .yaml, .json, .txt file to open
 - **PDF export** — via Pandoc with Mermaid diagram support
 - **Resizable split** — drag divider between editor and preview
 - **Keyboard-first** — `Cmd+O` open, `Cmd+S` save, `Cmd+P` preview, `Cmd+E` read mode
