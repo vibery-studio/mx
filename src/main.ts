@@ -320,108 +320,63 @@ const editorFillTheme = EditorView.theme({
 
 // --- Sample content ---
 
-const SAMPLE_CONTENT = `# mx — AI-Native Markdown Editor
+const SAMPLE_CONTENT = `# About mx
 
-A fast, lightweight editor for the age of AI. Open any \`.md\` file, see live preview with **Mermaid diagrams**, **LaTeX math**, and **token counting**.
+**mx** is a fast, lightweight markdown editor built for the AI era. Open any \`.md\` file instantly with live preview — no vault, no config, just open and go.
+
+If you're coming from MacDown (abandoned since 2020), mx picks up where it left off with modern features and native Apple Silicon performance.
 
 ## Features
 
-- **Live preview** with split pane
+- **Live split preview** with resizable pane
 - **Mermaid diagrams** rendered inline
-- **KaTeX math** for equations
-- **Token counter** with cost estimates
-- **Drag & drop** any .md file
+- **KaTeX math** — inline \`$...$\` and display \`$$...$$\`
+- **YAML frontmatter** rendered as metadata table
+- **Copy formatted** — paste rich HTML into Substack, WordPress, Notion
+- **PDF export** via Pandoc with Mermaid support
+- **File sidebar** — browse directories
+- **Drag & drop** any .md, .yaml, .json, .txt file
 
-## Architecture
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| \`Cmd+O\` | Open file |
+| \`Cmd+S\` | Save file |
+| \`Cmd+P\` | Toggle preview |
+| \`Cmd+E\` | Read mode (preview only) |
+| \`Cmd+B\` | Toggle file sidebar |
+| \`Cmd+Shift+C\` | Copy formatted HTML |
+
+## Mermaid Diagrams
 
 \`\`\`mermaid
 graph TD
-    A[User opens .md file] --> B[CodeMirror Editor]
+    A[Open .md file] --> B[CodeMirror Editor]
     B --> C{Content Changed}
-    C -->|debounce 300ms| D[markdown-it Parser]
-    D --> E[KaTeX Math Rendering]
-    E --> F[Mermaid Diagram Rendering]
-    F --> G[Live Preview Pane]
-    C -->|invoke| H[Rust Backend]
-    H --> I[Token Counter]
-    I --> J[Status Bar Update]
-\`\`\`
-
-## User Flow
-
-\`\`\`mermaid
-sequenceDiagram
-    participant U as User
-    participant E as Editor
-    participant R as Rust Backend
-    participant P as Preview
-
-    U->>E: Type markdown
-    E->>R: count_tokens(text)
-    R-->>E: {tokens, cost}
-    E->>P: Render HTML + Mermaid + KaTeX
-    U->>E: Cmd+S
-    E->>R: save_file(path, content)
-    R-->>E: Ok
-    U->>E: Drop .md file
-    E->>R: read_file(path)
-    R-->>E: {content}
-    E->>P: Update preview
+    C -->|debounce| D[markdown-it]
+    D --> E[KaTeX + Mermaid]
+    E --> F[Live Preview]
 \`\`\`
 
 ## Math Support
 
-Inline math: $E = mc^2$ and $\\sum_{i=1}^{n} x_i = x_1 + x_2 + \\cdots + x_n$
+Inline: $E = mc^2$ and $\\sum_{i=1}^{n} x_i$
 
-Display math:
+Display:
 
 $$
 \\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}
 $$
 
-$$
-f(x) = \\frac{1}{\\sigma\\sqrt{2\\pi}} e^{-\\frac{(x-\\mu)^2}{2\\sigma^2}}
-$$
+## YAML Frontmatter
 
-## Code Blocks
+Files with YAML frontmatter (\`---\` blocks) are rendered as a styled metadata table in the preview pane.
 
-\`\`\`typescript
-async function countTokens(text: string): Promise<TokenCount> {
-  return await invoke("count_tokens", { text });
-}
-\`\`\`
+---
 
-\`\`\`rust
-#[tauri::command]
-fn count_tokens(text: String) -> TokenCount {
-    let estimated_tokens = text.len() / 4;
-    TokenCount { chars: text.len(), estimated_tokens }
-}
-\`\`\`
-
-## State Diagram
-
-\`\`\`mermaid
-stateDiagram-v2
-    [*] --> Empty: App Launch
-    Empty --> Editing: Open/Drop File
-    Editing --> Modified: Type
-    Modified --> Saved: Cmd+S
-    Saved --> Modified: Type
-    Modified --> Editing: Undo All
-    Editing --> Empty: Close File
-\`\`\`
-
-## Why mx?
-
-| Feature | mx | MacDown | Typora | Obsidian |
-|---------|-----|---------|--------|----------|
-| Startup | <200ms | ~1s | ~2s | ~3s |
-| Bundle size | ~8MB | ~30MB | ~80MB | ~200MB |
-| Mermaid | Yes | Broken | Yes | Yes |
-| Token count | **Yes** | No | No | No |
-| Cost estimate | **Yes** | No | No | No |
-| AI-native | **Yes** | No | No | Partial |
+**GitHub:** https://github.com/vibery-studio/mx
+Report bugs and request features at https://github.com/vibery-studio/mx/issues
 
 > **Drop a .md file to get started, or just start typing!**
 `;
@@ -674,6 +629,12 @@ window.addEventListener("DOMContentLoaded", () => {
   // Check for file passed on cold start
   invoke<string | null>("get_initial_file").then((path) => {
     if (path) openFile(path);
+  });
+
+  // GitHub link — open in system browser
+  document.getElementById("status-github")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" });
   });
 
   // Initial render

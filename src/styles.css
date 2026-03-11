@@ -184,8 +184,15 @@ body {
   white-space: nowrap;
 }
 
-#status-cost {
+#status-github {
   margin-left: auto;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 11px;
+}
+
+#status-github:hover {
+  color: var(--accent);
 }
 
 /* ── Preview Typography ── */
