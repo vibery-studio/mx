@@ -50,25 +50,11 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
-      - name: Upload artifacts
+      - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: artifacts-${{ matrix.label }}
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz.sig
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage.tar.gz
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage.tar.gz.sig
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*-setup.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*-setup.nsis.zip
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*-setup.nsis.zip.sig
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi.zip
-            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi.zip.sig
+          name: bundle-${{ matrix.label }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/
 
   release:
     needs: build
@@ -76,90 +62,82 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download all bundles
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: bundles
           merge-multiple: true
 
-      - name: List artifacts
-        run: find artifacts -type f | sort
+      - name: List all files
+        run: find bundles -type f | sort
 
-      - name: Collect release files
+      - name: Collect release files and generate latest.json
         run: |
           mkdir -p release-files
-          find artifacts -type f \( \
-            -name "*.dmg" -o \
-            -name "*.app.tar.gz" -o \
-            -name "*.app.tar.gz.sig" -o \
-            -name "*.deb" -o \
-            -name "*.rpm" -o \
-            -name "*.AppImage" -o \
-            -name "*.AppImage.tar.gz" -o \
-            -name "*.AppImage.tar.gz.sig" -o \
-            -name "*-setup.exe" -o \
-            -name "*-setup.nsis.zip" -o \
-            -name "*-setup.nsis.zip.sig" -o \
-            -name "*.msi" -o \
-            -name "*.msi.zip" -o \
-            -name "*.msi.zip.sig" \
-          \) -exec cp {} release-files/ \;
-          ls -la release-files/
-
-      - name: Generate latest.json
-        run: |
-          cd release-files
           VERSION="${GITHUB_REF_NAME#v}"
-          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          PUB_DATE="$DATE"
-          NOTES="mx v${VERSION}"
-
-          # Read signatures
-          MAC_SIG=""
-          LINUX_SIG=""
-          WIN_SIG=""
-
-          if [ -f *.app.tar.gz.sig ]; then
-            MAC_SIG=$(cat *.app.tar.gz.sig)
-          fi
-          if [ -f *.AppImage.tar.gz.sig ]; then
-            LINUX_SIG=$(cat *.AppImage.tar.gz.sig)
-          fi
-          if [ -f *-setup.nsis.zip.sig ]; then
-            WIN_SIG=$(cat *-setup.nsis.zip.sig)
-          fi
-
-          # Get filenames
-          MAC_TAR=$(ls *.app.tar.gz 2>/dev/null | head -1)
-          LINUX_TAR=$(ls *.AppImage.tar.gz 2>/dev/null | head -1)
-          WIN_ZIP=$(ls *-setup.nsis.zip 2>/dev/null | head -1)
-
           REPO="${GITHUB_REPOSITORY}"
           BASE="https://github.com/${REPO}/releases/download/v${VERSION}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Build JSON
+          # Copy installers
+          find bundles -name "*.dmg" -exec cp {} release-files/ \;
+          find bundles -name "*.deb" -exec cp {} release-files/ \;
+          find bundles -name "*.rpm" -exec cp {} release-files/ \;
+          find bundles -name "*.AppImage" ! -name "*.sig" -exec cp {} release-files/ \;
+          find bundles -name "*-setup.exe" -exec cp {} release-files/ \;
+          find bundles -name "*.msi" ! -name "*.sig" ! -name "*.zip*" -exec cp {} release-files/ \;
+
+          # Copy updater bundles + sigs
+          find bundles -name "*.app.tar.gz" -exec cp {} release-files/ \;
+          find bundles -name "*.app.tar.gz.sig" -exec cp {} release-files/ \;
+          find bundles -name "*.AppImage.tar.gz" -exec cp {} release-files/ \;
+          find bundles -name "*.AppImage.tar.gz.sig" -exec cp {} release-files/ \;
+          find bundles -name "*-setup.nsis.zip" -exec cp {} release-files/ \;
+          find bundles -name "*-setup.nsis.zip.sig" -exec cp {} release-files/ \;
+
+          echo "=== Release files ==="
+          ls -la release-files/
+
+          # Read signatures
+          cd release-files
+          MAC_SIG=$(cat *.app.tar.gz.sig 2>/dev/null || echo "")
+          LINUX_SIG=$(cat *.AppImage.tar.gz.sig 2>/dev/null || echo "")
+          WIN_SIG=$(cat *-setup.nsis.zip.sig 2>/dev/null || echo "")
+
+          MAC_FILE=$(ls *.app.tar.gz 2>/dev/null | grep -v '.sig' | head -1 || echo "")
+          LINUX_FILE=$(ls *.AppImage.tar.gz 2>/dev/null | grep -v '.sig' | head -1 || echo "")
+          WIN_FILE=$(ls *-setup.nsis.zip 2>/dev/null | grep -v '.sig' | head -1 || echo "")
+
+          echo "MAC_SIG=${MAC_SIG}"
+          echo "MAC_FILE=${MAC_FILE}"
+          echo "LINUX_SIG=${LINUX_SIG}"
+          echo "LINUX_FILE=${LINUX_FILE}"
+          echo "WIN_SIG=${WIN_SIG}"
+          echo "WIN_FILE=${WIN_FILE}"
+
           cat > latest.json << ENDJSON
           {
             "version": "${VERSION}",
-            "notes": "${NOTES}",
-            "pub_date": "${PUB_DATE}",
+            "notes": "mx v${VERSION}",
+            "pub_date": "${DATE}",
             "platforms": {
               "darwin-aarch64": {
                 "signature": "${MAC_SIG}",
-                "url": "${BASE}/${MAC_TAR}"
+                "url": "${BASE}/${MAC_FILE}"
               },
               "linux-x86_64": {
                 "signature": "${LINUX_SIG}",
-                "url": "${BASE}/${LINUX_TAR}"
+                "url": "${BASE}/${LINUX_FILE}"
               },
               "windows-x86_64": {
                 "signature": "${WIN_SIG}",
-                "url": "${BASE}/${WIN_ZIP}"
+                "url": "${BASE}/${WIN_FILE}"
               }
             }
           }
           ENDJSON
 
+          echo "=== latest.json ==="
           cat latest.json
 
       - name: Create GitHub Release
