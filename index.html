@@ -17,17 +17,24 @@
         <div id="toolbar-actions">
           <button id="btn-toggle-sidebar" title="Toggle sidebar (Cmd+B)">Files</button>
           <button id="btn-open-folder" title="Open folder">Folder</button>
+          <button id="btn-recent" title="Recent files">Recent</button>
           <button id="btn-open" title="Open file (Cmd+O)">Open</button>
           <button id="btn-save" title="Save (Cmd+S)">Save</button>
           <button id="btn-toggle-preview" title="Toggle preview (Cmd+P)">Preview</button>
           <button id="btn-read-mode" title="Read mode (Cmd+E)">Read</button>
           <button id="btn-copy-html" title="Copy formatted (Cmd+Shift+C)">Copy</button>
           <button id="btn-export-pdf" title="Export PDF">PDF</button>
+          <button id="btn-zoom-out" title="Zoom out (Cmd+-)">-</button>
+          <button id="btn-zoom-in" title="Zoom in (Cmd+=)">+</button>
         </div>
         <div id="token-info">
+          <span id="status-zoom">100%</span>
           <span id="token-count">0 words</span>
           <span id="cost-estimate" class="dim">0 lines</span>
         </div>
+      </div>
+      <div id="recent-panel" class="hidden">
+        <div id="recent-list"></div>
       </div>
       <div id="editor-container">
         <div id="sidebar" class="hidden">

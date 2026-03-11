@@ -34,6 +34,7 @@ body {
 #app {
   display: flex;
   flex-direction: column;
+  position: relative;
 }
 
 /* ── Toolbar ── */
@@ -327,26 +328,35 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.85em;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-#preview-pane .frontmatter table {
-  width: 100%;
-  margin: 0;
-  border: none;
+.fm-row {
+  display: flex;
+  gap: 8px;
+  line-height: 1.5;
 }
 
-#preview-pane .frontmatter td {
-  border: none;
-  padding: 2px 8px 2px 0;
-  vertical-align: top;
-}
-
-#preview-pane .frontmatter .fm-key {
+.fm-key {
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 0.92em;
   white-space: nowrap;
-  width: 1%;
+  flex-shrink: 0;
+  min-width: 80px;
+}
+
+.fm-key::after {
+  content: ":";
+}
+
+.fm-val {
+  color: var(--text);
+  word-break: break-word;
+  flex: 1;
+  min-width: 0;
 }
 
 /* ── Mermaid ── */
@@ -453,6 +463,82 @@ body {
 .tree-indent {
   width: 12px;
   flex-shrink: 0;
+}
+
+.tree-chevron {
+  flex-shrink: 0;
+  width: 14px;
+  font-size: 8px;
+  text-align: center;
+  color: var(--muted);
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.tree-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.tree-chevron-placeholder {
+  width: 14px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+.tree-children {
+  /* nested container for child entries */
+}
+
+/* ── Recent Panel ── */
+
+#recent-panel {
+  position: absolute;
+  top: 40px;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.recent-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 16px;
+  cursor: pointer;
+  gap: 2px;
+}
+
+.recent-item:hover {
+  background: rgba(137, 180, 250, 0.08);
+}
+
+.recent-name {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.recent-path {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-empty {
+  padding: 12px 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── Zoom indicator ── */
+
+#status-zoom {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 /* ── Print ── */

@@ -20,6 +20,66 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 let currentFilePath: string | null = null;
 let editor: EditorView;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let zoomLevel = 100; // percentage
+const MAX_RECENT = 10;
+
+// --- Recent files ---
+
+function getRecentFiles(): string[] {
+  try { return JSON.parse(localStorage.getItem("mx-recent-files") || "[]"); }
+  catch { return []; }
+}
+
+function addRecentFile(path: string) {
+  let recent = getRecentFiles().filter(p => p !== path);
+  recent.unshift(path);
+  if (recent.length > MAX_RECENT) recent = recent.slice(0, MAX_RECENT);
+  localStorage.setItem("mx-recent-files", JSON.stringify(recent));
+  renderRecentFiles();
+}
+
+function renderRecentFiles() {
+  const list = document.getElementById("recent-list");
+  if (!list) return;
+  const recent = getRecentFiles();
+  if (recent.length === 0) {
+    list.innerHTML = '<div class="recent-empty">No recent files</div>';
+    return;
+  }
+  list.innerHTML = recent.map(p => {
+    const name = p.split("/").pop()!;
+    const dir = p.split("/").slice(0, -1).join("/");
+    return `<div class="recent-item" data-path="${p.replace(/"/g, "&quot;")}"><span class="recent-name">${name}</span><span class="recent-path">${dir}</span></div>`;
+  }).join("");
+  list.querySelectorAll(".recent-item").forEach(el => {
+    el.addEventListener("click", () => {
+      openFile((el as HTMLElement).dataset.path!);
+      toggleRecentPanel();
+    });
+  });
+}
+
+function toggleRecentPanel() {
+  const panel = document.getElementById("recent-panel");
+  if (!panel) return;
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) renderRecentFiles();
+}
+
+// --- Zoom ---
+
+function applyZoom() {
+  const previewPane = $("#preview-pane");
+  const editorPane = $("#editor-pane");
+  if (previewPane) previewPane.style.fontSize = `${zoomLevel}%`;
+  if (editorPane) editorPane.style.fontSize = `${zoomLevel}%`;
+  const el = document.getElementById("status-zoom");
+  if (el) el.textContent = `${zoomLevel}%`;
+}
+
+function zoomIn() { zoomLevel = Math.min(200, zoomLevel + 10); applyZoom(); }
+function zoomOut() { zoomLevel = Math.max(50, zoomLevel - 10); applyZoom(); }
+function zoomReset() { zoomLevel = 100; applyZoom(); }
 
 // --- DOM refs ---
 
@@ -78,15 +138,57 @@ function extractFrontmatter(content: string): { frontmatter: string | null; body
   return { frontmatter: match[1], body: content.slice(match[0].length) };
 }
 
+function parseYamlFrontmatter(yaml: string): { key: string; value: string }[] {
+  const lines = yaml.split("\n");
+  const entries: { key: string; value: string }[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const match = line.match(/^(\w[\w\s-]*):\s*(.*)/);
+    if (match) {
+      const key = match[1].trim();
+      let val = match[2].trim();
+      // Check for block scalar (> or |) or empty value with indented continuation
+      if (val === ">" || val === "|" || val === ">-" || val === "|-") {
+        val = "";
+        i++;
+        while (i < lines.length && (lines[i].startsWith("  ") || lines[i].trim() === "")) {
+          val += (val ? " " : "") + lines[i].trim();
+          i++;
+        }
+        val = val.trim();
+      } else if (val === "") {
+        // Could be a list or nested block
+        i++;
+        const listItems: string[] = [];
+        while (i < lines.length && (lines[i].startsWith("  ") || lines[i].startsWith("\t"))) {
+          const item = lines[i].trim();
+          if (item.startsWith("- ")) listItems.push(item.slice(2));
+          else listItems.push(item);
+          i++;
+        }
+        val = listItems.join(", ");
+      } else {
+        // Strip quotes
+        val = val.replace(/^["']|["']$/g, "");
+        i++;
+      }
+      entries.push({ key, value: val });
+    } else {
+      i++;
+    }
+  }
+  return entries;
+}
+
 function renderFrontmatter(yaml: string): string {
-  const rows = yaml.split("\n").filter(l => l.trim()).map(line => {
-    const idx = line.indexOf(":");
-    if (idx === -1) return `<tr><td colspan="2">${escapeHtml(line)}</td></tr>`;
-    const key = line.slice(0, idx).trim();
-    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
-    return `<tr><td class="fm-key">${escapeHtml(key)}</td><td>${escapeHtml(val)}</td></tr>`;
+  const entries = parseYamlFrontmatter(yaml);
+  if (entries.length === 0) return "";
+  const rows = entries.map(({ key, value }) => {
+    const displayVal = value.length > 200 ? value.slice(0, 200) + "..." : value;
+    return `<div class="fm-row"><span class="fm-key">${escapeHtml(key)}</span><span class="fm-val">${escapeHtml(displayVal)}</span></div>`;
   }).join("");
-  return `<div class="frontmatter"><table>${rows}</table></div>`;
+  return `<div class="frontmatter">${rows}</div>`;
 }
 
 function escapeHtml(s: string): string {
@@ -198,6 +300,7 @@ async function openFile(path: string) {
     });
     setFilename(result.path);
     setModified(false);
+    addRecentFile(result.path);
   } catch (e) {
     console.error("Open failed:", e);
   }
@@ -301,12 +404,25 @@ function toggleReadMode() {
 
 async function initDragDrop() {
   const appWindow = getCurrentWindow();
-  await appWindow.onDragDropEvent((event) => {
+  await appWindow.onDragDropEvent(async (event) => {
     if (event.payload.type === "drop") {
       const paths = event.payload.paths;
       const textExts = [".md", ".markdown", ".txt", ".yaml", ".yml", ".json", ".toml", ".xml", ".csv", ".log"];
-      const mdFile = paths.find((p: string) => textExts.some(ext => p.endsWith(ext)));
-      if (mdFile) openFile(mdFile);
+
+      // Check first path — could be a folder
+      const first = paths[0];
+      if (first) {
+        try {
+          // Try listing as directory — if it works, it's a folder
+          await invoke<unknown[]>("list_directory", { path: first });
+          // It's a folder — open in sidebar
+          openFolder(first);
+          return;
+        } catch { /* not a directory, continue */ }
+      }
+
+      const textFile = paths.find((p: string) => textExts.some(ext => p.endsWith(ext)));
+      if (textFile) openFile(textFile);
     }
   });
 }
@@ -467,7 +583,6 @@ async function exportPDF() {
 
 // --- Sidebar / File tree ---
 
-let currentFolderPath: string | null = null;
 
 interface DirEntry {
   name: string;
@@ -490,51 +605,78 @@ function getFileIcon(entry: DirEntry): string {
   return "📄";
 }
 
+// Track expanded directories
+const expandedDirs = new Set<string>();
+
 async function loadDirectory(path: string) {
   try {
     const entries = await invoke<DirEntry[]>("list_directory", { path });
     const tree = document.getElementById("sidebar-tree");
     if (!tree) return;
     tree.innerHTML = "";
-
-    // Add parent directory entry if not root
-    if (path !== "/") {
-      const parentItem = document.createElement("div");
-      parentItem.className = "tree-item directory";
-      parentItem.innerHTML = `<span class="icon">📁</span><span class="name">..</span>`;
-      const parentPath = path.split("/").slice(0, -1).join("/") || "/";
-      parentItem.addEventListener("click", () => {
-        currentFolderPath = parentPath;
-        loadDirectory(parentPath);
-        updateSidebarTitle(parentPath);
-      });
-      tree.appendChild(parentItem);
-    }
-
-    for (const entry of entries) {
-      const item = document.createElement("div");
-      item.className = `tree-item${entry.is_dir ? " directory" : ""}`;
-      if (entry.path === currentFilePath) item.classList.add("active");
-      item.innerHTML = `<span class="icon">${getFileIcon(entry)}</span><span class="name">${entry.name}</span>`;
-
-      if (entry.is_dir) {
-        item.addEventListener("click", () => {
-          currentFolderPath = entry.path;
-          loadDirectory(entry.path);
-          updateSidebarTitle(entry.path);
-        });
-      } else {
-        item.addEventListener("click", () => {
-          openFile(entry.path);
-          // highlight active
-          tree.querySelectorAll(".tree-item").forEach(el => el.classList.remove("active"));
-          item.classList.add("active");
-        });
-      }
-      tree.appendChild(item);
-    }
+    await renderTreeEntries(entries, tree, 0);
   } catch (e) {
     console.error("Failed to load directory:", e);
+  }
+}
+
+async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, depth: number) {
+  for (const entry of entries) {
+    const item = document.createElement("div");
+    item.className = `tree-item${entry.is_dir ? " directory" : ""}`;
+    if (entry.path === currentFilePath) item.classList.add("active");
+
+    const indent = '<span class="tree-indent"></span>'.repeat(depth);
+    const chevron = entry.is_dir
+      ? `<span class="tree-chevron${expandedDirs.has(entry.path) ? " expanded" : ""}">▶</span>`
+      : '<span class="tree-chevron-placeholder"></span>';
+
+    item.innerHTML = `${indent}${chevron}<span class="icon">${getFileIcon(entry)}</span><span class="name">${entry.name}</span>`;
+
+    if (entry.is_dir) {
+      const childContainer = document.createElement("div");
+      childContainer.className = "tree-children";
+      childContainer.dataset.path = entry.path;
+      if (!expandedDirs.has(entry.path)) childContainer.classList.add("hidden");
+
+      item.addEventListener("click", async () => {
+        const isExpanded = expandedDirs.has(entry.path);
+        if (isExpanded) {
+          expandedDirs.delete(entry.path);
+          childContainer.classList.add("hidden");
+          item.querySelector(".tree-chevron")?.classList.remove("expanded");
+        } else {
+          expandedDirs.add(entry.path);
+          childContainer.classList.remove("hidden");
+          item.querySelector(".tree-chevron")?.classList.add("expanded");
+          // Load children if empty
+          if (childContainer.children.length === 0) {
+            try {
+              const children = await invoke<DirEntry[]>("list_directory", { path: entry.path });
+              await renderTreeEntries(children, childContainer, depth + 1);
+            } catch { /* ignore */ }
+          }
+        }
+      });
+
+      container.appendChild(item);
+      container.appendChild(childContainer);
+
+      // If already expanded, load children
+      if (expandedDirs.has(entry.path) && childContainer.children.length === 0) {
+        try {
+          const children = await invoke<DirEntry[]>("list_directory", { path: entry.path });
+          await renderTreeEntries(children, childContainer, depth + 1);
+        } catch { /* ignore */ }
+      }
+    } else {
+      item.addEventListener("click", () => {
+        openFile(entry.path);
+        document.querySelectorAll("#sidebar-tree .tree-item").forEach(el => el.classList.remove("active"));
+        item.classList.add("active");
+      });
+      container.appendChild(item);
+    }
   }
 }
 
@@ -548,11 +690,14 @@ function toggleSidebar() {
   if (sidebar) sidebar.classList.toggle("hidden");
 }
 
-async function openFolder() {
-  // Use a simple approach - open the home directory or current dir
-  // In a real app, we'd use a native folder picker dialog
-  const path = currentFolderPath || "/Users";
-  currentFolderPath = path;
+async function openFolder(folderPath?: string) {
+  let path = folderPath;
+  if (!path) {
+    const selected = await open({ directory: true, multiple: false });
+    if (!selected) return;
+    path = selected as string;
+  }
+  expandedDirs.clear();
   const sidebar = document.getElementById("sidebar");
   if (sidebar?.classList.contains("hidden")) {
     sidebar.classList.remove("hidden");
@@ -591,6 +736,9 @@ window.addEventListener("DOMContentLoaded", () => {
           { key: "Mod-b", run: () => { toggleSidebar(); return true; } },
           { key: "Mod-e", run: () => { toggleReadMode(); return true; } },
           { key: "Mod-Shift-c", run: () => { copyFormattedHTML(); return true; } },
+          { key: "Mod-=", run: () => { zoomIn(); return true; } },
+          { key: "Mod--", run: () => { zoomOut(); return true; } },
+          { key: "Mod-0", run: () => { zoomReset(); return true; } },
         ]),
         EditorView.updateListener.of((update: ViewUpdate) => {
           if (update.docChanged || update.selectionSet) {
@@ -613,7 +761,10 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-copy-html")?.addEventListener("click", copyFormattedHTML);
   document.getElementById("btn-export-pdf")?.addEventListener("click", exportPDF);
   document.getElementById("btn-toggle-sidebar")?.addEventListener("click", toggleSidebar);
-  document.getElementById("btn-open-folder")?.addEventListener("click", openFolder);
+  document.getElementById("btn-open-folder")?.addEventListener("click", () => openFolder());
+  document.getElementById("btn-recent")?.addEventListener("click", toggleRecentPanel);
+  document.getElementById("btn-zoom-in")?.addEventListener("click", zoomIn);
+  document.getElementById("btn-zoom-out")?.addEventListener("click", zoomOut);
 
   // Divider drag
   initDividerDrag();
