@@ -22,8 +22,18 @@ flowchart TB
 |---------|-----|---------|
 | File name | `#filename` | Current file or "No file open" |
 | Modified dot | `#modified-indicator` | Orange `●` when unsaved |
-| Buttons | `#toolbar-actions` | Files, Folder, Open, Save, Preview, Read, PDF |
+| Dropdown menus | `.toolbar-dropdown` | File ▾, View ▾, Help ▾ |
+| Copy button | `#btn-copy-html` | Copy formatted HTML |
+| Zoom controls | `#btn-zoom-out`, `#status-zoom`, `#btn-zoom-in` | − 100% + |
 | Stats | `#token-info` | Word count + line count |
+
+### Dropdown Menus
+
+| Menu | Items |
+|------|-------|
+| File ▾ | Open File (⌘O), Open Folder, Recent Files, Save (⌘S), Export PDF |
+| View ▾ | Toggle Sidebar (⌘B), Toggle Preview (⌘P), Read Mode (⌘E) |
+| Help ▾ | Check for Updates..., About mx |
 
 ## 2. View Modes
 
@@ -88,3 +98,4 @@ Mouse-drag on `#divider` resizes editor/preview split. Clamped to 20%-80% range.
 | [01-editor-engine](01-editor-engine.md) | Editor pane content |
 | [02-preview-pipeline](02-preview-pipeline.md) | Preview pane content |
 | [03-file-operations](03-file-operations.md) | Sidebar file browsing |
+| [06-auto-update](06-auto-update.md) | Help menu update check |

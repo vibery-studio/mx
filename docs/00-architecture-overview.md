@@ -18,6 +18,7 @@ flowchart TB
         FS[File I/O]
         WC[Word Counter]
         PDF[PDF Export]
+        UPD[Updater Plugin]
     end
 
     CM -->|content change| MD
@@ -25,6 +26,7 @@ flowchart TB
     CM -->|invoke| WC
     CM -->|invoke| FS
     UI -->|invoke| PDF
+    UPD -->|check| GH[GitHub Releases]
 ```
 
 ## 1. Tech Stack
@@ -37,6 +39,8 @@ flowchart TB
 | Preview | markdown-it + KaTeX + Mermaid | Live HTML rendering |
 | Backend | Rust | File ops, word count, PDF export |
 | PDF | Pandoc + mermaid.ink | Markdown-to-PDF pipeline |
+| Update | tauri-plugin-updater | In-app auto-update via GitHub Releases |
+| CI/CD | GitHub Actions | Multi-platform build + release |
 
 ## 2. Process Model
 
@@ -70,3 +74,5 @@ Tauri runs two processes: a Rust backend exposing commands via IPC, and a webvie
 | [03-file-operations](03-file-operations.md) | Rust backend commands |
 | [04-pdf-export](04-pdf-export.md) | PDF generation |
 | [05-ui-layout](05-ui-layout.md) | UI components |
+| [06-auto-update](06-auto-update.md) | In-app update system |
+| [07-release-pipeline](07-release-pipeline.md) | CI/CD and release process |

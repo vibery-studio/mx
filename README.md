@@ -94,6 +94,8 @@ brew install --cask mactex-no-gui
 | [03-file-operations](docs/03-file-operations.md) | Rust commands, file I/O |
 | [04-pdf-export](docs/04-pdf-export.md) | Pandoc + mermaid.ink pipeline |
 | [05-ui-layout](docs/05-ui-layout.md) | UI components, theme, view modes |
+| [06-auto-update](docs/06-auto-update.md) | In-app auto-update system |
+| [07-release-pipeline](docs/07-release-pipeline.md) | CI/CD, signing, release process |
 
 ## License
 
