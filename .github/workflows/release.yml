@@ -90,10 +90,8 @@ jobs:
           # Copy updater bundles + sigs
           find bundles -name "*.app.tar.gz" -exec cp {} release-files/ \;
           find bundles -name "*.app.tar.gz.sig" -exec cp {} release-files/ \;
-          find bundles -name "*.AppImage.tar.gz" -exec cp {} release-files/ \;
-          find bundles -name "*.AppImage.tar.gz.sig" -exec cp {} release-files/ \;
-          find bundles -name "*-setup.nsis.zip" -exec cp {} release-files/ \;
-          find bundles -name "*-setup.nsis.zip.sig" -exec cp {} release-files/ \;
+          find bundles -name "*.AppImage.sig" -exec cp {} release-files/ \;
+          find bundles -name "*-setup.exe.sig" -exec cp {} release-files/ \;
 
           echo "=== Release files ==="
           ls -la release-files/
@@ -101,12 +99,12 @@ jobs:
           # Read signatures
           cd release-files
           MAC_SIG=$(cat *.app.tar.gz.sig 2>/dev/null || echo "")
-          LINUX_SIG=$(cat *.AppImage.tar.gz.sig 2>/dev/null || echo "")
-          WIN_SIG=$(cat *-setup.nsis.zip.sig 2>/dev/null || echo "")
+          LINUX_SIG=$(cat *.AppImage.sig 2>/dev/null || echo "")
+          WIN_SIG=$(cat *-setup.exe.sig 2>/dev/null || echo "")
 
           MAC_FILE=$(ls *.app.tar.gz 2>/dev/null | grep -v '.sig' | head -1 || echo "")
-          LINUX_FILE=$(ls *.AppImage.tar.gz 2>/dev/null | grep -v '.sig' | head -1 || echo "")
-          WIN_FILE=$(ls *-setup.nsis.zip 2>/dev/null | grep -v '.sig' | head -1 || echo "")
+          LINUX_FILE=$(ls *.AppImage 2>/dev/null | grep -v '.sig' | head -1 || echo "")
+          WIN_FILE=$(ls *-setup.exe 2>/dev/null | grep -v '.sig' | head -1 || echo "")
 
           echo "MAC_SIG=${MAC_SIG}"
           echo "MAC_FILE=${MAC_FILE}"
