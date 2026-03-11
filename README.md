@@ -2,6 +2,8 @@
 
 A fast, lightweight markdown editor for the AI era. Built with Tauri 2 + Rust.
 
+![mx screenshot](screenshot.jpeg)
+
 **Coming from [MacDown](https://macdown.uranusjr.com/)?** MacDown has been abandoned since 2020 — no Mermaid support, no Apple Silicon build, no updates. mx picks up where MacDown left off: same simplicity, but with modern features like Mermaid diagrams, KaTeX math, YAML frontmatter, and a fraction of the bundle size.
 
 ## Download
