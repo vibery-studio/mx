@@ -426,6 +426,41 @@ stateDiagram-v2
 > **Drop a .md file to get started, or just start typing!**
 `;
 
+// --- Copy formatted HTML ---
+
+async function copyFormattedHTML() {
+  const previewPane = $("#preview-pane");
+  if (!previewPane) return;
+
+  // Get the rendered HTML from preview pane
+  const html = previewPane.innerHTML;
+  // Also get plain text fallback
+  const text = previewPane.innerText;
+
+  try {
+    await navigator.clipboard.write([
+      new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([text], { type: "text/plain" }),
+      }),
+    ]);
+
+    // Flash status feedback
+    const statusWords = document.getElementById("status-words");
+    const prevText = statusWords?.textContent || "";
+    if (statusWords) {
+      statusWords.textContent = "Copied!";
+      statusWords.style.color = "#a6e3a1";
+      setTimeout(() => {
+        statusWords.textContent = prevText;
+        statusWords.style.color = "";
+      }, 2000);
+    }
+  } catch (e) {
+    console.error("Copy failed:", e);
+  }
+}
+
 // --- Export to PDF ---
 
 async function exportPDF() {
@@ -600,6 +635,7 @@ window.addEventListener("DOMContentLoaded", () => {
           { key: "Mod-p", run: () => { togglePreview(); return true; } },
           { key: "Mod-b", run: () => { toggleSidebar(); return true; } },
           { key: "Mod-e", run: () => { toggleReadMode(); return true; } },
+          { key: "Mod-Shift-c", run: () => { copyFormattedHTML(); return true; } },
         ]),
         EditorView.updateListener.of((update: ViewUpdate) => {
           if (update.docChanged || update.selectionSet) {
@@ -619,6 +655,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Sidebar buttons
   document.getElementById("btn-read-mode")?.addEventListener("click", toggleReadMode);
+  document.getElementById("btn-copy-html")?.addEventListener("click", copyFormattedHTML);
   document.getElementById("btn-export-pdf")?.addEventListener("click", exportPDF);
   document.getElementById("btn-toggle-sidebar")?.addEventListener("click", toggleSidebar);
   document.getElementById("btn-open-folder")?.addEventListener("click", openFolder);
