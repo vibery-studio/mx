@@ -11,6 +11,7 @@ import mermaid from "mermaid";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 
@@ -69,13 +70,39 @@ async function renderMermaidDivs() {
   } catch { /* mermaid render errors are non-fatal */ }
 }
 
+// --- YAML Frontmatter ---
+
+function extractFrontmatter(content: string): { frontmatter: string | null; body: string } {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n?/);
+  if (!match) return { frontmatter: null, body: content };
+  return { frontmatter: match[1], body: content.slice(match[0].length) };
+}
+
+function renderFrontmatter(yaml: string): string {
+  const rows = yaml.split("\n").filter(l => l.trim()).map(line => {
+    const idx = line.indexOf(":");
+    if (idx === -1) return `<tr><td colspan="2">${escapeHtml(line)}</td></tr>`;
+    const key = line.slice(0, idx).trim();
+    const val = line.slice(idx + 1).trim().replace(/^["']|["']$/g, "");
+    return `<tr><td class="fm-key">${escapeHtml(key)}</td><td>${escapeHtml(val)}</td></tr>`;
+  }).join("");
+  return `<div class="frontmatter"><table>${rows}</table></div>`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 // --- Preview rendering ---
 
 async function updatePreview(content: string) {
   const previewPane = $("#preview-pane");
   if (!previewPane || previewPane.style.display === "none") return;
 
-  let html = md.render(content);
+  const { frontmatter, body } = extractFrontmatter(content);
+  let html = "";
+  if (frontmatter) html += renderFrontmatter(frontmatter);
+  html += md.render(body);
   html = renderKaTeX(html);
   html = processMermaidBlocks(html);
   previewPane.innerHTML = html;
@@ -153,7 +180,11 @@ async function saveFile() {
 
 async function openFileDialog() {
   const path = await open({
-    filters: [{ name: "Markdown", extensions: ["md", "markdown", "txt"] }],
+    filters: [
+      { name: "Markdown", extensions: ["md", "markdown"] },
+      { name: "Text", extensions: ["txt", "yaml", "yml", "json", "toml", "xml", "csv", "log"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
     multiple: false,
   });
   if (path) openFile(path as string);
@@ -273,7 +304,8 @@ async function initDragDrop() {
   await appWindow.onDragDropEvent((event) => {
     if (event.payload.type === "drop") {
       const paths = event.payload.paths;
-      const mdFile = paths.find((p: string) => p.endsWith(".md"));
+      const textExts = [".md", ".markdown", ".txt", ".yaml", ".yml", ".json", ".toml", ".xml", ".csv", ".log"];
+      const mdFile = paths.find((p: string) => textExts.some(ext => p.endsWith(ext)));
       if (mdFile) openFile(mdFile);
     }
   });
@@ -596,6 +628,16 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Tauri drag & drop
   initDragDrop();
+
+  // Listen for file open events (double-click .md in Finder, warm start)
+  listen<string>("open-file", (event) => {
+    openFile(event.payload);
+  });
+
+  // Check for file passed on cold start
+  invoke<string | null>("get_initial_file").then((path) => {
+    if (path) openFile(path);
+  });
 
   // Initial render
   updateCursorPosition(editor);

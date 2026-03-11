@@ -1,6 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
+use tauri::Emitter;
+
+static INITIAL_FILE: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Serialize, Deserialize)]
 struct FileInfo {
@@ -85,6 +89,11 @@ fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
 #[tauri::command]
 fn get_home_dir() -> Result<String, String> {
     std::env::var("HOME").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_initial_file() -> Option<String> {
+    INITIAL_FILE.lock().unwrap().take()
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -231,7 +240,22 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, export_pdf])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Opened { urls } = event {
+                let files: Vec<String> = urls
+                    .into_iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
+                if let Some(path) = files.first() {
+                    // Store for cold start (frontend not ready yet)
+                    *INITIAL_FILE.lock().unwrap() = Some(path.clone());
+                    // Emit for warm start (frontend already listening)
+                    let _ = app.emit("open-file", path.clone());
+                }
+            }
+        });
 }
