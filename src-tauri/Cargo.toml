@@ -1,9 +1,9 @@
 [package]
 name = "mx"
 version = "0.3.0"
-description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
+description = "Fast, lightweight markdown editor for the AI era"
+authors = ["Tony@Vibery Studio"]
+edition = "2024"
 
 [lib]
 name = "mx_lib"
