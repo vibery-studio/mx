@@ -159,6 +159,16 @@ body {
   color: var(--muted);
   min-width: 36px;
   text-align: center;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+}
+
+.arrow {
+  font-size: 9px;
+  margin-left: 2px;
+  opacity: 0.6;
 }
 
 #token-info {
