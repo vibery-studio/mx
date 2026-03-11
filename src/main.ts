@@ -14,6 +14,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 
 // --- State ---
 
@@ -706,6 +708,69 @@ async function openFolder(folderPath?: string) {
   updateSidebarTitle(path);
 }
 
+// --- Auto update ---
+
+async function doUpdateCheck(manual: boolean) {
+  const statusWords = document.getElementById("status-words");
+  try {
+    if (manual && statusWords) {
+      statusWords.textContent = "Checking for updates...";
+      statusWords.style.color = "#89b4fa";
+    }
+
+    const update = await check();
+    if (!update) {
+      if (manual && statusWords) {
+        statusWords.textContent = "You're on the latest version";
+        statusWords.style.color = "#a6e3a1";
+        setTimeout(() => { statusWords.textContent = ""; statusWords.style.color = ""; }, 3000);
+      }
+      return;
+    }
+
+    if (statusWords) {
+      statusWords.textContent = `Update ${update.version} available — downloading...`;
+      statusWords.style.color = "#89b4fa";
+    }
+
+    let totalSize = 0;
+    let downloaded = 0;
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started" && event.data.contentLength) {
+        totalSize = event.data.contentLength;
+      } else if (event.event === "Progress") {
+        downloaded += event.data.chunkLength;
+        if (statusWords && totalSize > 0) {
+          const pct = Math.round((downloaded / totalSize) * 100);
+          statusWords.textContent = `Downloading update... ${pct}%`;
+        }
+      }
+    });
+
+    if (statusWords) {
+      statusWords.textContent = "Update installed — click to restart";
+      statusWords.style.color = "#a6e3a1";
+      statusWords.style.cursor = "pointer";
+      statusWords.addEventListener("click", () => relaunch(), { once: true });
+    }
+  } catch (e) {
+    console.error("Update check failed:", e);
+    if (manual && statusWords) {
+      statusWords.textContent = "Update check failed";
+      statusWords.style.color = "#f38ba8";
+      setTimeout(() => { statusWords.textContent = ""; statusWords.style.color = ""; }, 3000);
+    }
+  }
+}
+
+async function checkForUpdates() {
+  const lastCheck = localStorage.getItem("mx-update-last-check");
+  const now = Date.now();
+  if (lastCheck && now - Number(lastCheck) < 7 * 24 * 60 * 60 * 1000) return;
+  localStorage.setItem("mx-update-last-check", String(now));
+  await doUpdateCheck(false);
+}
+
 // --- Init ---
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -766,6 +831,22 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-zoom-in")?.addEventListener("click", zoomIn);
   document.getElementById("btn-zoom-out")?.addEventListener("click", zoomOut);
 
+  // Help menu
+  const helpMenu = document.getElementById("help-menu");
+  document.getElementById("btn-help")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    helpMenu?.classList.toggle("hidden");
+  });
+  document.addEventListener("click", () => helpMenu?.classList.add("hidden"));
+  document.getElementById("btn-check-updates")?.addEventListener("click", () => {
+    helpMenu?.classList.add("hidden");
+    doUpdateCheck(true);
+  });
+  document.getElementById("btn-about")?.addEventListener("click", () => {
+    helpMenu?.classList.add("hidden");
+    invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" });
+  });
+
   // Divider drag
   initDividerDrag();
 
@@ -792,4 +873,7 @@ window.addEventListener("DOMContentLoaded", () => {
   updateCursorPosition(editor);
   updatePreview(SAMPLE_CONTENT);
   updateWordCount(SAMPLE_CONTENT);
+
+  // Check for updates after 3s so it doesn't block startup
+  setTimeout(checkForUpdates, 3000);
 });

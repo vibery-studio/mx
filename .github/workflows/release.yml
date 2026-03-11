@@ -48,10 +48,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: "mx v__VERSION__"
           releaseBody: "Download the installer for your platform below."
           releaseDraft: false
           prerelease: false
+          updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }}

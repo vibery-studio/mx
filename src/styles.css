@@ -101,6 +101,36 @@ body {
   background: var(--muted);
 }
 
+#help-menu-wrapper {
+  position: relative;
+}
+
+#help-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 100;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.help-menu-item {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.help-menu-item:hover {
+  background: var(--border);
+}
+
 #token-info {
   display: flex;
   align-items: center;
