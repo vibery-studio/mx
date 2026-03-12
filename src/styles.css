@@ -1031,6 +1031,120 @@ body {
   color: var(--accent) !important;
 }
 
+/* ── Zen mode ── */
+
+#app.zen-mode #toolbar,
+#app.zen-mode #statusbar,
+#app.zen-mode #sidebar,
+#app.zen-mode #sidebar-resizer,
+#app.zen-mode #divider {
+  display: none !important;
+}
+
+#app.zen-mode #editor-pane {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+#app.zen-mode #preview-pane {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* ── Image lightbox ── */
+
+#image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  cursor: zoom-out;
+}
+
+#image-lightbox img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 4px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+
+/* ── Selection count in status bar ── */
+
+#status-selection {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ── Theme icon button ── */
+
+#btn-theme-icon {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: background 0.15s;
+}
+
+#btn-theme-icon:hover {
+  background: var(--hover-bg);
+}
+
+/* ── Copy dropdown ── */
+
+#copy-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 160px;
+  z-index: 100;
+  box-shadow: 0 4px 12px var(--shadow);
+}
+
+/* ── Scroll padding (#2) ── */
+
+#preview-pane {
+  scroll-padding-top: 2rem;
+  scroll-padding-bottom: 4rem;
+}
+
+.cm-scroller {
+  padding-bottom: 40vh !important;
+}
+
+/* ── Preview images clickable ── */
+
+#preview-pane img {
+  cursor: zoom-in;
+}
+
+/* ── Code folding gutter ── */
+
+.cm-foldGutter .cm-gutterElement {
+  cursor: pointer;
+  color: var(--muted);
+  transition: color 0.15s;
+}
+
+.cm-foldGutter .cm-gutterElement:hover {
+  color: var(--accent);
+}
+
 /* ── CM6 Search panel theme override ── */
 
 .cm-panel.cm-search {

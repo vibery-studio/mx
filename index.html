@@ -29,6 +29,8 @@
               <div id="btn-autosave" class="dropdown-item">Auto-save: <span id="autosave-label">Off</span></div>
               <div class="dropdown-divider"></div>
               <div id="btn-export-pdf" class="dropdown-item">Export PDF</div>
+              <div id="btn-export-html" class="dropdown-item">Export HTML</div>
+              <div id="btn-export-docx" class="dropdown-item">Export DOCX</div>
             </div>
           </div>
           <div class="toolbar-dropdown">
@@ -40,6 +42,7 @@
               <div class="dropdown-divider"></div>
               <div id="btn-toggle-outline" class="dropdown-item">Toggle Outline</div>
               <div id="btn-toggle-linenumbers" class="dropdown-item">Line Numbers: <span id="linenumbers-label">On</span></div>
+              <div id="btn-zen-mode" class="dropdown-item">Zen Mode</div>
               <div class="dropdown-divider"></div>
               <div id="btn-theme" class="dropdown-item"><span id="btn-theme-label">Theme: System</span></div>
             </div>
@@ -55,7 +58,16 @@
           <span class="toolbar-sep"></span>
 
           <!-- Primary actions -->
-          <button id="btn-copy-html" title="Copy formatted (Cmd+Shift+C)">Copy</button>
+          <button id="btn-theme-icon" title="Toggle theme">◐</button>
+          <span class="toolbar-sep"></span>
+          <div class="toolbar-dropdown" style="position:relative">
+            <button id="btn-copy-html" title="Copy formatted (Cmd+Shift+C)">Copy ▾</button>
+            <div id="copy-dropdown" class="dropdown-menu hidden">
+              <div id="btn-copy-formatted" class="dropdown-item">Copy Formatted</div>
+              <div id="btn-copy-raw" class="dropdown-item">Copy Raw Markdown</div>
+              <div id="btn-copy-plain" class="dropdown-item">Copy Plain Text</div>
+            </div>
+          </div>
           <span class="toolbar-sep"></span>
           <button id="btn-zoom-out" title="Zoom out (Cmd+-)">−</button>
           <span id="status-zoom" class="toolbar-zoom">100%</span>
@@ -104,6 +116,10 @@
         <div id="ctx-new-folder" class="ctx-item">New Folder</div>
         <div class="ctx-divider"></div>
         <div id="ctx-rename" class="ctx-item">Rename</div>
+        <div id="ctx-duplicate" class="ctx-item">Duplicate</div>
+        <div id="ctx-copy-path" class="ctx-item">Copy Path</div>
+        <div id="ctx-reveal" class="ctx-item">Reveal in Finder</div>
+        <div class="ctx-divider"></div>
         <div id="ctx-delete" class="ctx-item ctx-danger">Delete</div>
       </div>
       <!-- Command palette -->
@@ -124,10 +140,13 @@
       </div>
       <div id="statusbar">
         <span id="status-position">Ln 1, Col 1</span>
+        <span id="status-selection"></span>
         <span id="status-words">0 words</span>
         <span id="status-tokens">0 chars</span>
         <a id="status-github" href="https://github.com/vibery-studio/mx" target="_blank">GitHub</a>
       </div>
+      <!-- Image lightbox -->
+      <div id="image-lightbox" class="hidden"></div>
     </div>
   </body>
 </html>

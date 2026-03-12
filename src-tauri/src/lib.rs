@@ -366,6 +366,302 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
     Err(format!("pandoc failed: {}", last_err))
 }
 
+#[tauri::command]
+fn duplicate_entry(path: String) -> Result<String, String> {
+    let src = PathBuf::from(&path);
+    if !src.exists() {
+        return Err("Source path does not exist".to_string());
+    }
+    let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let parent = src.parent().ok_or("Cannot determine parent directory")?;
+
+    // Find a unique name with -copy, -copy-2, -copy-3, etc.
+    let mut dest = parent.join(format!("{}-copy{}", stem, ext));
+    let mut counter = 2u32;
+    while dest.exists() {
+        dest = parent.join(format!("{}-copy-{}{}", stem, counter, ext));
+        counter += 1;
+    }
+
+    if src.is_dir() {
+        fn copy_dir(src: &Path, dst: &Path) -> Result<(), String> {
+            fs::create_dir(dst).map_err(|e| e.to_string())?;
+            for entry in fs::read_dir(src).map_err(|e| e.to_string())?.flatten() {
+                let target = dst.join(entry.file_name());
+                if entry.path().is_dir() {
+                    copy_dir(&entry.path(), &target)?;
+                } else {
+                    fs::copy(&entry.path(), &target).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        copy_dir(&src, &dest)?;
+    } else {
+        fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    }
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    use std::process::Command;
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err("Path does not exist".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg("-R").arg(&path).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer").arg(format!("/select,{}", &path)).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = p.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| path.clone());
+        Command::new("xdg-open").arg(&parent).spawn().map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn export_html(markdown_content: String, theme: String) -> Result<String, String> {
+    // Simple markdown-to-HTML: use a basic conversion approach
+    // We process line-by-line for headings, paragraphs, code blocks, lists, etc.
+    let mut html_body = String::new();
+    let mut in_code_block = false;
+    let mut code_lang = String::new();
+    let mut code_buf = String::new();
+    let mut in_list = false;
+    let mut in_paragraph = false;
+
+    for line in markdown_content.lines() {
+        if line.starts_with("```") && !in_code_block {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            if in_list { html_body.push_str("</ul>\n"); in_list = false; }
+            in_code_block = true;
+            code_lang = line.trim_start_matches('`').trim().to_string();
+            code_buf.clear();
+            continue;
+        } else if line.starts_with("```") && in_code_block {
+            in_code_block = false;
+            let lang_attr = if code_lang.is_empty() { String::new() } else { format!(" class=\"language-{}\"", escape_html(&code_lang)) };
+            html_body.push_str(&format!("<pre><code{}>{}</code></pre>\n", lang_attr, escape_html(&code_buf)));
+            code_lang.clear();
+            continue;
+        }
+
+        if in_code_block {
+            code_buf.push_str(line);
+            code_buf.push('\n');
+            continue;
+        }
+
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            if in_list { html_body.push_str("</ul>\n"); in_list = false; }
+            continue;
+        }
+
+        // Headings
+        if trimmed.starts_with("######") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<h6>{}</h6>\n", inline_format(trimmed.trim_start_matches('#').trim())));
+        } else if trimmed.starts_with("#####") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<h5>{}</h5>\n", inline_format(trimmed.trim_start_matches('#').trim())));
+        } else if trimmed.starts_with("####") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<h4>{}</h4>\n", inline_format(trimmed.trim_start_matches('#').trim())));
+        } else if trimmed.starts_with("###") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<h3>{}</h3>\n", inline_format(trimmed.trim_start_matches('#').trim())));
+        } else if trimmed.starts_with("##") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<h2>{}</h2>\n", inline_format(trimmed.trim_start_matches('#').trim())));
+        } else if trimmed.starts_with('#') {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<h1>{}</h1>\n", inline_format(trimmed.trim_start_matches('#').trim())));
+        } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            if !in_list { html_body.push_str("<ul>\n"); in_list = true; }
+            html_body.push_str(&format!("<li>{}</li>\n", inline_format(&trimmed[2..])));
+        } else if trimmed.starts_with("---") || trimmed.starts_with("***") || trimmed.starts_with("___") {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str("<hr>\n");
+        } else if trimmed.starts_with('>') {
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            html_body.push_str(&format!("<blockquote>{}</blockquote>\n", inline_format(trimmed.trim_start_matches('>').trim())));
+        } else {
+            if !in_paragraph { html_body.push_str("<p>"); in_paragraph = true; }
+            else { html_body.push_str("<br>"); }
+            html_body.push_str(&inline_format(trimmed));
+            html_body.push('\n');
+        }
+    }
+
+    if in_paragraph { html_body.push_str("</p>\n"); }
+    if in_list { html_body.push_str("</ul>\n"); }
+    if in_code_block {
+        html_body.push_str(&format!("<pre><code>{}</code></pre>\n", escape_html(&code_buf)));
+    }
+
+    let (bg, fg, accent, code_bg, border, blockquote_border) = if theme == "light" {
+        ("#ffffff", "#1e1e2e", "#1e66f5", "#f5f5f5", "#e0e0e0", "#1e66f5")
+    } else {
+        ("#1e1e2e", "#cdd6f4", "#89b4fa", "#313244", "#45475a", "#89b4fa")
+    };
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: {bg}; color: {fg}; max-width: 800px; margin: 0 auto; padding: 2rem; line-height: 1.6; }}
+h1, h2, h3, h4, h5, h6 {{ margin-top: 1.5em; margin-bottom: 0.5em; font-weight: 600; }}
+h1 {{ font-size: 2em; border-bottom: 1px solid {border}; padding-bottom: 0.3em; }}
+h2 {{ font-size: 1.5em; border-bottom: 1px solid {border}; padding-bottom: 0.3em; }}
+a {{ color: {accent}; text-decoration: none; }}
+a:hover {{ text-decoration: underline; }}
+pre {{ background: {code_bg}; padding: 1em; border-radius: 6px; overflow-x: auto; }}
+code {{ font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; }}
+p code {{ background: {code_bg}; padding: 0.2em 0.4em; border-radius: 3px; }}
+blockquote {{ border-left: 4px solid {blockquote_border}; margin: 1em 0; padding: 0.5em 1em; color: {fg}; opacity: 0.85; }}
+hr {{ border: none; border-top: 1px solid {border}; margin: 2em 0; }}
+ul {{ padding-left: 1.5em; }}
+li {{ margin: 0.25em 0; }}
+img {{ max-width: 100%; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>"#,
+        bg = bg, fg = fg, accent = accent, code_bg = code_bg,
+        border = border, blockquote_border = blockquote_border,
+        body = html_body,
+    );
+
+    Ok(html)
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn inline_format(s: &str) -> String {
+    let s = escape_html(s);
+    // Bold: **text** or __text__
+    let s = regex_replace_all(&s, r"\*\*(.+?)\*\*", "<strong>$1</strong>");
+    let s = regex_replace_all(&s, r"__(.+?)__", "<strong>$1</strong>");
+    // Italic: *text* or _text_
+    let s = regex_replace_all(&s, r"\*(.+?)\*", "<em>$1</em>");
+    let s = regex_replace_all(&s, r"_(.+?)_", "<em>$1</em>");
+    // Inline code: `text`
+    let s = regex_replace_all(&s, r"`(.+?)`", "<code>$1</code>");
+    // Links: [text](url)
+    let s = regex_replace_all(&s, r"\[(.+?)\]\((.+?)\)", "<a href=\"$2\">$1</a>");
+    // Images: ![alt](url)
+    let s = regex_replace_all(&s, r"!\[(.+?)\]\((.+?)\)", "<img alt=\"$1\" src=\"$2\">");
+    s
+}
+
+fn regex_replace_all(text: &str, pattern: &str, replacement: &str) -> String {
+    // Simple regex-like replacement without regex crate
+    // Handles basic patterns used in inline_format
+    let mut result = text.to_string();
+
+    if pattern == r"\*\*(.+?)\*\*" {
+        result = replace_delimited(&result, "**", "**", |inner| {
+            replacement.replace("$1", inner)
+        });
+    } else if pattern == r"__(.+?)__" {
+        result = replace_delimited(&result, "__", "__", |inner| {
+            replacement.replace("$1", inner)
+        });
+    } else if pattern == r"\*(.+?)\*" {
+        result = replace_delimited(&result, "*", "*", |inner| {
+            replacement.replace("$1", inner)
+        });
+    } else if pattern == r"_(.+?)_" {
+        result = replace_delimited(&result, "_", "_", |inner| {
+            replacement.replace("$1", inner)
+        });
+    } else if pattern == r"`(.+?)`" {
+        result = replace_delimited(&result, "`", "`", |inner| {
+            replacement.replace("$1", inner)
+        });
+    } else if pattern == r"\[(.+?)\]\((.+?)\)" {
+        // Link pattern: [text](url)
+        while let Some(start) = result.find('[') {
+            if let Some(mid) = result[start..].find("](") {
+                let mid = start + mid;
+                if let Some(end) = result[mid + 2..].find(')') {
+                    let end = mid + 2 + end;
+                    let text_part = &result[start + 1..mid].to_string();
+                    let url_part = &result[mid + 2..end].to_string();
+                    let rep = replacement.replace("$1", text_part).replace("$2", url_part);
+                    result = format!("{}{}{}", &result[..start], rep, &result[end + 1..]);
+                    continue;
+                }
+            }
+            break;
+        }
+    } else if pattern == r"!\[(.+?)\]\((.+?)\)" {
+        // Image pattern: ![alt](url)
+        while let Some(start) = result.find("![") {
+            if let Some(mid) = result[start + 1..].find("](") {
+                let mid = start + 1 + mid;
+                if let Some(end) = result[mid + 2..].find(')') {
+                    let end = mid + 2 + end;
+                    let alt = &result[start + 2..mid].to_string();
+                    let url = &result[mid + 2..end].to_string();
+                    let rep = replacement.replace("$1", alt).replace("$2", url);
+                    result = format!("{}{}{}", &result[..start], rep, &result[end + 1..]);
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
+    result
+}
+
+fn replace_delimited<F: Fn(&str) -> String>(text: &str, open: &str, close: &str, f: F) -> String {
+    let mut result = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(open) {
+        result.push_str(&rest[..start]);
+        let after_open = &rest[start + open.len()..];
+        if let Some(end) = after_open.find(close) {
+            let inner = &after_open[..end];
+            if !inner.is_empty() {
+                result.push_str(&f(inner));
+            } else {
+                result.push_str(open);
+                result.push_str(close);
+            }
+            rest = &after_open[end + close.len()..];
+        } else {
+            result.push_str(open);
+            rest = after_open;
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -377,7 +673,7 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

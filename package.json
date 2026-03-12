@@ -23,11 +23,13 @@
     "codemirror": "^6.0.2",
     "katex": "^0.16.38",
     "markdown-it": "^14.1.1",
+    "markdown-it-footnote": "^4.0.0",
     "mermaid": "^11.13.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/markdown-it": "^14.1.2",
+    "@types/markdown-it-footnote": "^3.0.4",
     "typescript": "~5.6.2",
     "vite": "^6.0.3"
   }
