@@ -6,6 +6,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { defaultKeymap, indentWithTab, history, historyKeymap } from "@codemirror/commands";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from "@codemirror/language";
 import { closeBrackets } from "@codemirror/autocomplete";
+import { search, searchKeymap } from "@codemirror/search";
 import MarkdownIt from "markdown-it";
 import mermaid from "mermaid";
 import katex from "katex";
@@ -20,10 +21,27 @@ import { relaunch } from "@tauri-apps/plugin-process";
 // --- State ---
 
 let currentFilePath: string | null = null;
+let currentFolderPath: string | null = localStorage.getItem("mx-current-folder");
 let editor: EditorView;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-let zoomLevel = 100; // percentage
+let zoomLevel = 100;
 const MAX_RECENT = 10;
+
+// Auto-save state
+let autoSaveEnabled = localStorage.getItem("mx-autosave") === "true";
+let autoSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const AUTO_SAVE_DELAY = 3000;
+
+// Recovery state
+let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+const RECOVERY_INTERVAL = 30000;
+
+// Line numbers state
+let showLineNumbers = localStorage.getItem("mx-line-numbers") !== "false";
+const lineNumbersCompartment = new Compartment();
+
+// Context menu state
+let contextMenuTarget: { path: string; isDir: boolean; parentPath: string } | null = null;
 
 // --- Recent files ---
 
@@ -100,7 +118,6 @@ function applyTheme() {
   document.documentElement.setAttribute("data-theme", currentThemeMode);
   localStorage.setItem("mx-theme", currentThemeMode);
 
-  // Update CodeMirror theme
   if (editor) {
     const isDark = getEffectiveTheme() === "dark";
     editor.dispatch({
@@ -108,16 +125,13 @@ function applyTheme() {
     });
   }
 
-  // Update mermaid theme
   mermaid.initialize({ startOnLoad: false, theme: getEffectiveTheme() === "dark" ? "dark" : "default" });
 
-  // Re-render preview to update mermaid diagrams
   if (editor) {
     mermaidCounter = 0;
     updatePreview(editor.state.doc.toString());
   }
 
-  // Update theme menu label
   const label = document.getElementById("btn-theme-label");
   if (label) {
     const labels: Record<ThemeMode, string> = { auto: "System", light: "Light", dark: "Dark" };
@@ -132,7 +146,6 @@ function cycleTheme() {
   applyTheme();
 }
 
-// Listen for system theme changes when in auto mode
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   if (currentThemeMode === "auto") applyTheme();
 });
@@ -146,13 +159,11 @@ const $ = (sel: string) => document.querySelector(sel) as HTMLElement;
 const md = new MarkdownIt({ html: true, linkify: true, typographer: true });
 
 function renderKaTeX(html: string): string {
-  // Block math: $$...$$
   html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_match, tex: string) => {
     try {
       return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false });
     } catch { return `<pre class="katex-error">${tex}</pre>`; }
   });
-  // Inline math: $...$  (not preceded/followed by $)
   html = html.replace(/(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)/g, (_match, tex: string) => {
     try {
       return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false });
@@ -204,7 +215,6 @@ function parseYamlFrontmatter(yaml: string): { key: string; value: string }[] {
     if (match) {
       const key = match[1].trim();
       let val = match[2].trim();
-      // Check for block scalar (> or |) or empty value with indented continuation
       if (val === ">" || val === "|" || val === ">-" || val === "|-") {
         val = "";
         i++;
@@ -214,7 +224,6 @@ function parseYamlFrontmatter(yaml: string): { key: string; value: string }[] {
         }
         val = val.trim();
       } else if (val === "") {
-        // Could be a list or nested block
         i++;
         const listItems: string[] = [];
         while (i < lines.length && (lines[i].startsWith("  ") || lines[i].startsWith("\t"))) {
@@ -225,7 +234,6 @@ function parseYamlFrontmatter(yaml: string): { key: string; value: string }[] {
         }
         val = listItems.join(", ");
       } else {
-        // Strip quotes
         val = val.replace(/^["']|["']$/g, "");
         i++;
       }
@@ -313,7 +321,6 @@ function setFilename(path: string | null) {
 async function saveFile() {
   const content = editor.state.doc.toString();
   if (!currentFilePath) {
-    // No file path — show Save As dialog
     const path = await save({
       filters: [{ name: "Markdown", extensions: ["md"] }],
       defaultPath: "untitled.md",
@@ -323,6 +330,7 @@ async function saveFile() {
       await invoke("save_file", { path, content });
       setFilename(path);
       setModified(false);
+      deleteRecoveryForCurrent();
     } catch (e) {
       console.error("Save failed:", e);
     }
@@ -331,6 +339,7 @@ async function saveFile() {
   try {
     await invoke("save_file", { path: currentFilePath, content });
     setModified(false);
+    deleteRecoveryForCurrent();
   } catch (e) {
     console.error("Save failed:", e);
   }
@@ -362,6 +371,221 @@ async function openFile(path: string) {
   }
 }
 
+// --- New file ---
+
+async function newFile() {
+  if (currentFolderPath) {
+    // Create in current folder
+    let name = "untitled.md";
+    let counter = 1;
+    while (true) {
+      try {
+        await invoke("create_file", { path: `${currentFolderPath}/${name}` });
+        await openFile(`${currentFolderPath}/${name}`);
+        refreshSidebar();
+        return;
+      } catch {
+        counter++;
+        name = `untitled-${counter}.md`;
+      }
+    }
+  } else {
+    // No folder — just reset editor
+    editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: "" },
+    });
+    setFilename(null);
+    setModified(false);
+  }
+}
+
+// --- Auto-save ---
+
+function toggleAutoSave() {
+  autoSaveEnabled = !autoSaveEnabled;
+  localStorage.setItem("mx-autosave", String(autoSaveEnabled));
+  updateAutoSaveUI();
+}
+
+function updateAutoSaveUI() {
+  const label = document.getElementById("autosave-label");
+  if (label) label.textContent = autoSaveEnabled ? "On" : "Off";
+  const indicator = document.getElementById("autosave-indicator");
+  if (indicator) indicator.classList.toggle("hidden", !autoSaveEnabled);
+}
+
+function scheduleAutoSave() {
+  if (!autoSaveEnabled || !currentFilePath) return;
+  if (autoSaveTimer) clearTimeout(autoSaveTimer);
+  autoSaveTimer = setTimeout(async () => {
+    if (currentFilePath) {
+      await saveFile();
+      flashStatus("Auto-saved", "var(--success)");
+    }
+  }, AUTO_SAVE_DELAY);
+}
+
+// --- Crash recovery ---
+
+function scheduleRecovery() {
+  if (recoveryTimer) clearTimeout(recoveryTimer);
+  recoveryTimer = setTimeout(async () => {
+    if (currentFilePath) {
+      try {
+        await invoke("save_recovery", {
+          originalPath: currentFilePath,
+          content: editor.state.doc.toString(),
+        });
+      } catch { /* ignore */ }
+    }
+    scheduleRecovery();
+  }, RECOVERY_INTERVAL);
+}
+
+async function deleteRecoveryForCurrent() {
+  if (!currentFilePath) return;
+  try {
+    const files = await invoke<{ original_path: string; recovery_path: string; timestamp: number }[]>("get_recovery_files");
+    for (const f of files) {
+      if (f.original_path === currentFilePath) {
+        await invoke("delete_recovery", { recoveryPath: f.recovery_path });
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function checkRecovery() {
+  try {
+    const files = await invoke<{ original_path: string; recovery_path: string; timestamp: number }[]>("get_recovery_files");
+    if (files.length === 0) return;
+
+    const banner = document.getElementById("recovery-banner");
+    const msg = document.getElementById("recovery-message");
+    if (!banner || !msg) return;
+
+    const latest = files.sort((a, b) => b.timestamp - a.timestamp)[0];
+    msg.textContent = `Recovered unsaved changes for ${latest.original_path.split("/").pop()}`;
+    banner.classList.remove("hidden");
+
+    document.getElementById("recovery-restore")?.addEventListener("click", async () => {
+      try {
+        const content = await invoke<string>("read_recovery_content", { recoveryPath: latest.recovery_path });
+        editor.dispatch({
+          changes: { from: 0, to: editor.state.doc.length, insert: content },
+        });
+        setFilename(latest.original_path);
+        setModified(true);
+        // Clean up all recovery files
+        for (const f of files) {
+          await invoke("delete_recovery", { recoveryPath: f.recovery_path });
+        }
+      } catch { /* ignore */ }
+      banner.classList.add("hidden");
+    }, { once: true });
+
+    document.getElementById("recovery-dismiss")?.addEventListener("click", async () => {
+      for (const f of files) {
+        await invoke("delete_recovery", { recoveryPath: f.recovery_path });
+      }
+      banner.classList.add("hidden");
+    }, { once: true });
+  } catch { /* ignore */ }
+}
+
+// --- Line numbers toggle ---
+
+function toggleLineNumbers() {
+  showLineNumbers = !showLineNumbers;
+  localStorage.setItem("mx-line-numbers", String(showLineNumbers));
+  editor.dispatch({
+    effects: lineNumbersCompartment.reconfigure(showLineNumbers ? lineNumbers() : []),
+  });
+  updateLineNumbersUI();
+}
+
+function updateLineNumbersUI() {
+  const label = document.getElementById("linenumbers-label");
+  if (label) label.textContent = showLineNumbers ? "On" : "Off";
+}
+
+// --- Status flash ---
+
+function flashStatus(text: string, color: string, duration = 2000) {
+  const statusWords = document.getElementById("status-words");
+  if (!statusWords) return;
+  const prevText = statusWords.textContent || "";
+  statusWords.textContent = text;
+  statusWords.style.color = color;
+  setTimeout(() => {
+    statusWords.textContent = prevText;
+    statusWords.style.color = "";
+  }, duration);
+}
+
+// --- Custom dialogs (prompt/confirm don't work in Tauri webview) ---
+
+function showInputDialog(message: string, defaultValue = ""): Promise<string | null> {
+  return new Promise((resolve) => {
+    const palette = document.getElementById("command-palette");
+    const input = document.getElementById("palette-input") as HTMLInputElement;
+    const results = document.getElementById("palette-results");
+    if (!palette || !input || !results) { resolve(null); return; }
+
+    palette.classList.remove("hidden");
+    input.value = defaultValue;
+    input.placeholder = message;
+    input.focus();
+    if (defaultValue) {
+      const dotIdx = defaultValue.lastIndexOf(".");
+      input.setSelectionRange(0, dotIdx > 0 ? dotIdx : defaultValue.length);
+    }
+    results.innerHTML = `<div class="palette-item" style="color:var(--muted);pointer-events:none">${escapeHtml(message)} — press Enter to confirm, Esc to cancel</div>`;
+
+    const cleanup = () => {
+      palette.classList.add("hidden");
+      input.placeholder = "Type a command…";
+      input.removeEventListener("keydown", handler);
+      document.getElementById("palette-backdrop")?.removeEventListener("click", cancel);
+    };
+    const cancel = () => { cleanup(); resolve(null); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Enter") { e.preventDefault(); const v = input.value.trim(); cleanup(); resolve(v || null); }
+      if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    };
+    input.addEventListener("keydown", handler);
+    document.getElementById("palette-backdrop")?.addEventListener("click", cancel, { once: true });
+  });
+}
+
+function showConfirmDialog(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const palette = document.getElementById("command-palette");
+    const input = document.getElementById("palette-input") as HTMLInputElement;
+    const results = document.getElementById("palette-results");
+    if (!palette || !input || !results) { resolve(false); return; }
+
+    palette.classList.remove("hidden");
+    input.value = "";
+    input.placeholder = "y / n";
+    input.focus();
+    results.innerHTML = `<div class="palette-item" style="pointer-events:none">${escapeHtml(message)}</div><div class="palette-item" style="color:var(--muted);pointer-events:none">Press Y to confirm, N or Esc to cancel</div>`;
+
+    const cleanup = () => {
+      palette.classList.add("hidden");
+      input.placeholder = "Type a command…";
+      input.removeEventListener("keydown", handler);
+      document.getElementById("palette-backdrop")?.removeEventListener("click", cancel);
+    };
+    const cancel = () => { cleanup(); resolve(false); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "y" || e.key === "Y" || e.key === "Enter") { e.preventDefault(); cleanup(); resolve(true); }
+      if (e.key === "n" || e.key === "N" || e.key === "Escape") { e.preventDefault(); cancel(); }
+    };
+    input.addEventListener("keydown", handler);
+    document.getElementById("palette-backdrop")?.addEventListener("click", cancel, { once: true });
+  });
+}
+
 // --- Debounced content change handler ---
 
 function onContentChange(view: EditorView) {
@@ -370,9 +594,11 @@ function onContentChange(view: EditorView) {
     const content = view.state.doc.toString();
     updatePreview(content);
     updateWordCount(content);
+    updateOutline(content);
   }, 300);
   updateCursorPosition(view);
   setModified(true);
+  scheduleAutoSave();
 }
 
 // --- Divider drag to resize ---
@@ -396,8 +622,10 @@ function initDividerDrag() {
   window.addEventListener("mousemove", (e) => {
     if (!dragging) return;
     const rect = container.getBoundingClientRect();
-    const offset = e.clientX - rect.left;
-    const total = rect.width;
+    const sidebar = document.getElementById("sidebar");
+    const sidebarWidth = sidebar && !sidebar.classList.contains("hidden") ? sidebar.offsetWidth + 4 : 0;
+    const offset = e.clientX - rect.left - sidebarWidth;
+    const total = rect.width - sidebarWidth;
     const pct = Math.max(20, Math.min(80, (offset / total) * 100));
     editorPane.style.flexBasis = `${pct}%`;
     previewPane.style.flexBasis = `${100 - pct}%`;
@@ -410,6 +638,42 @@ function initDividerDrag() {
       document.body.style.userSelect = "";
     }
   });
+}
+
+// --- Sidebar resize ---
+
+function initSidebarResize() {
+  const resizer = document.getElementById("sidebar-resizer");
+  const sidebar = document.getElementById("sidebar");
+  if (!resizer || !sidebar) return;
+
+  let dragging = false;
+
+  resizer.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    dragging = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const width = Math.max(140, Math.min(500, e.clientX));
+    sidebar.style.width = `${width}px`;
+  });
+
+  window.addEventListener("mouseup", () => {
+    if (dragging) {
+      dragging = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      localStorage.setItem("mx-sidebar-width", sidebar!.style.width);
+    }
+  });
+
+  // Restore saved width
+  const savedWidth = localStorage.getItem("mx-sidebar-width");
+  if (savedWidth) sidebar.style.width = savedWidth;
 }
 
 // --- View modes: "split" | "editor" | "preview" ---
@@ -447,12 +711,10 @@ function setViewMode(mode: ViewMode) {
 }
 
 function togglePreview() {
-  // Cycle: split → editor → split
   setViewMode(currentViewMode === "split" ? "editor" : "split");
 }
 
 function toggleReadMode() {
-  // Cycle: current → preview → split
   setViewMode(currentViewMode === "preview" ? "split" : "preview");
 }
 
@@ -465,13 +727,10 @@ async function initDragDrop() {
       const paths = event.payload.paths;
       const textExts = [".md", ".markdown", ".txt", ".yaml", ".yml", ".json", ".toml", ".xml", ".csv", ".log"];
 
-      // Check first path — could be a folder
       const first = paths[0];
       if (first) {
         try {
-          // Try listing as directory — if it works, it's a folder
           await invoke<unknown[]>("list_directory", { path: first });
-          // It's a folder — open in sidebar
           openFolder(first);
           return;
         } catch { /* not a directory, continue */ }
@@ -537,9 +796,14 @@ If you're coming from MacDown (abandoned since 2020), mx picks up where it left 
 |----------|--------|
 | \`Cmd+O\` | Open file |
 | \`Cmd+S\` | Save file |
+| \`Cmd+N\` | New file |
 | \`Cmd+P\` | Toggle preview |
 | \`Cmd+E\` | Read mode (preview only) |
 | \`Cmd+B\` | Toggle file sidebar |
+| \`Cmd+F\` | Search in file |
+| \`Cmd+H\` | Search & replace |
+| \`Cmd+Shift+P\` | Command palette |
+| \`Cmd+Shift+F\` | File search |
 | \`Cmd+Shift+C\` | Copy formatted HTML |
 
 ## Mermaid Diagrams
@@ -581,9 +845,7 @@ async function copyFormattedHTML() {
   const previewPane = $("#preview-pane");
   if (!previewPane) return;
 
-  // Get the rendered HTML from preview pane
   const html = previewPane.innerHTML;
-  // Also get plain text fallback
   const text = previewPane.innerText;
 
   try {
@@ -593,18 +855,7 @@ async function copyFormattedHTML() {
         "text/plain": new Blob([text], { type: "text/plain" }),
       }),
     ]);
-
-    // Flash status feedback
-    const statusWords = document.getElementById("status-words");
-    const prevText = statusWords?.textContent || "";
-    if (statusWords) {
-      statusWords.textContent = "Copied!";
-      statusWords.style.color = "var(--success)";
-      setTimeout(() => {
-        statusWords.textContent = prevText;
-        statusWords.style.color = "";
-      }, 2000);
-    }
+    flashStatus("Copied!", "var(--success)");
   } catch (e) {
     console.error("Copy failed:", e);
   }
@@ -615,7 +866,6 @@ async function copyFormattedHTML() {
 async function exportPDF() {
   const content = editor.state.doc.toString();
 
-  // Ask where to save
   const defaultName = currentFilePath
     ? currentFilePath.replace(/\.md$/, ".pdf").split("/").pop()!
     : "export.pdf";
@@ -625,7 +875,6 @@ async function exportPDF() {
   });
   if (!outputPath) return;
 
-  // Show working state
   const statusWords = document.getElementById("status-words");
   const prevText = statusWords?.textContent || "";
   if (statusWords) {
@@ -661,7 +910,6 @@ async function exportPDF() {
 
 // --- Sidebar / File tree ---
 
-
 interface DirEntry {
   name: string;
   path: string;
@@ -683,7 +931,6 @@ function getFileIcon(entry: DirEntry): string {
   return "📄";
 }
 
-// Track expanded directories
 const expandedDirs = new Set<string>();
 
 async function loadDirectory(path: string) {
@@ -698,11 +945,106 @@ async function loadDirectory(path: string) {
   }
 }
 
+// --- Mouse-based drag to move (Tauri intercepts HTML5 drag events) ---
+
+let dragState: { srcPath: string; srcEl: HTMLElement; ghost: HTMLElement } | null = null;
+let dragStartPos: { x: number; y: number } | null = null;
+const DRAG_THRESHOLD = 5;
+
+function initTreeDrag(item: HTMLElement, entry: DirEntry) {
+  item.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return; // left click only
+    dragStartPos = { x: e.clientX, y: e.clientY };
+
+    const onMouseMove = (me: MouseEvent) => {
+      if (!dragStartPos) return;
+
+      // Only start drag after threshold
+      if (!dragState) {
+        const dx = me.clientX - dragStartPos.x;
+        const dy = me.clientY - dragStartPos.y;
+        if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return;
+
+        // Start dragging
+        item.classList.add("dragging");
+        const ghost = document.createElement("div");
+        ghost.className = "drag-ghost";
+        ghost.textContent = entry.name;
+        document.body.appendChild(ghost);
+        dragState = { srcPath: entry.path, srcEl: item, ghost };
+      }
+
+      dragState.ghost.style.left = `${me.clientX + 12}px`;
+      dragState.ghost.style.top = `${me.clientY - 10}px`;
+
+      // Highlight drop target
+      document.querySelectorAll(".tree-item.drag-over").forEach(el => el.classList.remove("drag-over"));
+      const target = document.elementFromPoint(me.clientX, me.clientY)?.closest(".tree-item.directory") as HTMLElement | null;
+      if (target && target !== item && target.dataset.path !== entry.path) {
+        target.classList.add("drag-over");
+      }
+    };
+
+    const onMouseUp = async (me: MouseEvent) => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+
+      if (!dragState) {
+        dragStartPos = null;
+        return; // Was a click, not a drag
+      }
+
+      item.classList.remove("dragging");
+      dragState.ghost.remove();
+      document.querySelectorAll(".tree-item.drag-over").forEach(el => el.classList.remove("drag-over"));
+
+      // Find drop target
+      const targetEl = document.elementFromPoint(me.clientX, me.clientY)?.closest(".tree-item.directory") as HTMLElement | null;
+      const srcPath = dragState.srcPath;
+      dragState = null;
+      dragStartPos = null;
+
+      let destDir: string | null = null;
+      if (targetEl && targetEl.dataset.path && targetEl.dataset.path !== srcPath) {
+        destDir = targetEl.dataset.path;
+      } else {
+        // Check if dropped on sidebar-tree empty area (move to root)
+        const treeEl = document.elementFromPoint(me.clientX, me.clientY)?.closest("#sidebar-tree");
+        if (treeEl && currentFolderPath) {
+          destDir = currentFolderPath;
+        }
+      }
+
+      if (!destDir) return;
+      const srcParent = srcPath.substring(0, srcPath.lastIndexOf("/"));
+      if (srcParent === destDir) return; // already there
+      // Prevent moving a folder into itself
+      if (destDir.startsWith(srcPath + "/")) return;
+
+      const srcName = srcPath.split("/").pop()!;
+      const destPath = `${destDir}/${srcName}`;
+      try {
+        await invoke("rename_entry", { oldPath: srcPath, newPath: destPath });
+        if (srcPath === currentFilePath) setFilename(destPath);
+        refreshSidebar();
+      } catch (err) {
+        flashStatus(`Move failed: ${err}`, "var(--error)", 3000);
+      }
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  });
+}
+
 async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, depth: number) {
   for (const entry of entries) {
     const item = document.createElement("div");
     item.className = `tree-item${entry.is_dir ? " directory" : ""}`;
     if (entry.path === currentFilePath) item.classList.add("active");
+    item.dataset.path = entry.path;
+    item.dataset.isDir = String(entry.is_dir);
+    item.dataset.parentPath = entry.path.substring(0, entry.path.lastIndexOf("/"));
 
     const indent = '<span class="tree-indent"></span>'.repeat(depth);
     const chevron = entry.is_dir
@@ -710,6 +1052,20 @@ async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, de
       : '<span class="tree-chevron-placeholder"></span>';
 
     item.innerHTML = `${indent}${chevron}<span class="icon">${getFileIcon(entry)}</span><span class="name">${entry.name}</span>`;
+
+    // Mouse-based drag to move
+    initTreeDrag(item, entry);
+
+    // Context menu on right-click
+    item.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showContextMenu(e.clientX, e.clientY, {
+        path: entry.path,
+        isDir: entry.is_dir,
+        parentPath: entry.path.substring(0, entry.path.lastIndexOf("/")),
+      });
+    });
 
     if (entry.is_dir) {
       const childContainer = document.createElement("div");
@@ -727,7 +1083,6 @@ async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, de
           expandedDirs.add(entry.path);
           childContainer.classList.remove("hidden");
           item.querySelector(".tree-chevron")?.classList.add("expanded");
-          // Load children if empty
           if (childContainer.children.length === 0) {
             try {
               const children = await invoke<DirEntry[]>("list_directory", { path: entry.path });
@@ -740,7 +1095,6 @@ async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, de
       container.appendChild(item);
       container.appendChild(childContainer);
 
-      // If already expanded, load children
       if (expandedDirs.has(entry.path) && childContainer.children.length === 0) {
         try {
           const children = await invoke<DirEntry[]>("list_directory", { path: entry.path });
@@ -775,6 +1129,8 @@ async function openFolder(folderPath?: string) {
     if (!selected) return;
     path = selected as string;
   }
+  currentFolderPath = path;
+  localStorage.setItem("mx-current-folder", path);
   expandedDirs.clear();
   const sidebar = document.getElementById("sidebar");
   if (sidebar?.classList.contains("hidden")) {
@@ -782,6 +1138,413 @@ async function openFolder(folderPath?: string) {
   }
   loadDirectory(path);
   updateSidebarTitle(path);
+}
+
+function refreshSidebar() {
+  if (currentFolderPath) loadDirectory(currentFolderPath);
+}
+
+// --- Context menu ---
+
+function showContextMenu(x: number, y: number, target: { path: string; isDir: boolean; parentPath: string }) {
+  const menu = document.getElementById("context-menu");
+  if (!menu) return;
+  contextMenuTarget = target;
+
+  // Show/hide items based on target type
+  const newFileItem = document.getElementById("ctx-new-file");
+  const newFolderItem = document.getElementById("ctx-new-folder");
+  if (newFileItem) newFileItem.style.display = target.isDir ? "" : "none";
+  if (newFolderItem) newFolderItem.style.display = target.isDir ? "" : "none";
+
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.remove("hidden");
+
+  // Ensure menu stays within viewport
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+  });
+}
+
+function hideContextMenu() {
+  const menu = document.getElementById("context-menu");
+  if (menu) menu.classList.add("hidden");
+  contextMenuTarget = null;
+}
+
+async function ctxNewFile() {
+  if (!contextMenuTarget?.isDir) return;
+  const dir = contextMenuTarget.path;
+  hideContextMenu();
+
+  const name = await showInputDialog("File name:", "untitled.md");
+  if (!name) return;
+
+  try {
+    await invoke("create_file", { path: `${dir}/${name}` });
+    refreshSidebar();
+    await openFile(`${dir}/${name}`);
+  } catch (e) {
+    flashStatus(`Error: ${e}`, "var(--error)", 3000);
+  }
+}
+
+async function ctxNewFolder() {
+  if (!contextMenuTarget?.isDir) return;
+  const dir = contextMenuTarget.path;
+  hideContextMenu();
+
+  const name = await showInputDialog("Folder name:");
+  if (!name) return;
+
+  try {
+    await invoke("create_directory", { path: `${dir}/${name}` });
+    refreshSidebar();
+  } catch (e) {
+    flashStatus(`Error: ${e}`, "var(--error)", 3000);
+  }
+}
+
+async function ctxDelete() {
+  if (!contextMenuTarget) return;
+  const target = contextMenuTarget;
+  hideContextMenu();
+
+  const name = target.path.split("/").pop()!;
+  if (!(await showConfirmDialog(`Move "${name}" to trash?`))) return;
+
+  try {
+    await invoke("delete_entry", { path: target.path });
+    if (target.path === currentFilePath) {
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: "" } });
+      setFilename(null);
+      setModified(false);
+    }
+    refreshSidebar();
+  } catch (e) {
+    flashStatus(`Delete failed: ${e}`, "var(--error)", 3000);
+  }
+}
+
+async function ctxRename() {
+  if (!contextMenuTarget) return;
+  const target = contextMenuTarget;
+  hideContextMenu();
+
+  const oldName = target.path.split("/").pop()!;
+  const treeItem = document.querySelector(`.tree-item[data-path="${CSS.escape(target.path)}"]`);
+  if (!treeItem) return;
+
+  const nameSpan = treeItem.querySelector(".name") as HTMLElement;
+  if (!nameSpan) return;
+
+  const input = document.createElement("input");
+  input.className = "tree-rename-input";
+  input.value = oldName;
+  nameSpan.replaceWith(input);
+  input.focus();
+  // Select name without extension for files
+  if (!target.isDir) {
+    const dotIdx = oldName.lastIndexOf(".");
+    input.setSelectionRange(0, dotIdx > 0 ? dotIdx : oldName.length);
+  } else {
+    input.select();
+  }
+
+  const doRename = async () => {
+    const newName = input.value.trim();
+    if (!newName || newName === oldName) {
+      // Cancel — restore original name
+      const span = document.createElement("span");
+      span.className = "name";
+      span.textContent = oldName;
+      input.replaceWith(span);
+      return;
+    }
+    const dir = target.path.substring(0, target.path.lastIndexOf("/"));
+    const newPath = `${dir}/${newName}`;
+    try {
+      await invoke("rename_entry", { oldPath: target.path, newPath });
+      if (target.path === currentFilePath) {
+        setFilename(newPath);
+      }
+      refreshSidebar();
+    } catch (e) {
+      flashStatus(`Rename failed: ${e}`, "var(--error)", 3000);
+      const span = document.createElement("span");
+      span.className = "name";
+      span.textContent = oldName;
+      input.replaceWith(span);
+    }
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); doRename(); }
+    if (e.key === "Escape") {
+      const span = document.createElement("span");
+      span.className = "name";
+      span.textContent = oldName;
+      input.replaceWith(span);
+    }
+  });
+  input.addEventListener("blur", doRename);
+}
+
+// --- Outline panel ---
+
+let outlineVisible = false;
+
+function toggleOutline() {
+  const panel = document.getElementById("outline-panel");
+  if (!panel) return;
+  outlineVisible = !outlineVisible;
+  panel.classList.toggle("hidden", !outlineVisible);
+  if (outlineVisible) updateOutline(editor.state.doc.toString());
+}
+
+function updateOutline(content: string) {
+  if (!outlineVisible) return;
+  const list = document.getElementById("outline-list");
+  if (!list) return;
+
+  const headings: { level: number; text: string; line: number }[] = [];
+  const lines = content.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#{1,6})\s+(.+)/);
+    if (match) {
+      headings.push({ level: match[1].length, text: match[2].trim(), line: i + 1 });
+    }
+  }
+
+  if (headings.length === 0) {
+    list.innerHTML = '<div style="padding: 8px 12px; color: var(--muted); font-size: 11px;">No headings</div>';
+    return;
+  }
+
+  list.innerHTML = headings.map(h => {
+    return `<div class="outline-item outline-h${h.level}" data-line="${h.line}">${escapeHtml(h.text)}</div>`;
+  }).join("");
+
+  list.querySelectorAll(".outline-item").forEach(el => {
+    el.addEventListener("click", () => {
+      const lineNum = parseInt((el as HTMLElement).dataset.line || "1");
+      const line = editor.state.doc.line(lineNum);
+      editor.dispatch({
+        selection: { anchor: line.from },
+        scrollIntoView: true,
+      });
+      editor.focus();
+    });
+  });
+}
+
+// --- Command palette ---
+
+interface PaletteCommand {
+  label: string;
+  shortcut?: string;
+  action: () => void;
+}
+
+function getCommands(): PaletteCommand[] {
+  return [
+    { label: "New File", shortcut: "⌘N", action: newFile },
+    { label: "Open File", shortcut: "⌘O", action: openFileDialog },
+    { label: "Open Folder", action: () => openFolder() },
+    { label: "Save", shortcut: "⌘S", action: saveFile },
+    { label: "Toggle Preview", shortcut: "⌘P", action: togglePreview },
+    { label: "Toggle Sidebar", shortcut: "⌘B", action: toggleSidebar },
+    { label: "Read Mode", shortcut: "⌘E", action: toggleReadMode },
+    { label: "Copy Formatted HTML", shortcut: "⌘⇧C", action: copyFormattedHTML },
+    { label: "Export PDF", action: exportPDF },
+    { label: "Toggle Outline", action: toggleOutline },
+    { label: "Toggle Line Numbers", action: toggleLineNumbers },
+    { label: "Toggle Auto-save", action: toggleAutoSave },
+    { label: "Cycle Theme", action: cycleTheme },
+    { label: "Zoom In", shortcut: "⌘+", action: zoomIn },
+    { label: "Zoom Out", shortcut: "⌘-", action: zoomOut },
+    { label: "Zoom Reset", shortcut: "⌘0", action: zoomReset },
+    { label: "File Search", shortcut: "⌘⇧F", action: openFileSearch },
+    { label: "Check for Updates", action: () => doUpdateCheck(true) },
+    { label: "About mx", action: () => invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" }) },
+  ];
+}
+
+let paletteSelectedIndex = 0;
+
+function toggleCommandPalette() {
+  const palette = document.getElementById("command-palette");
+  if (!palette) return;
+
+  if (!palette.classList.contains("hidden")) {
+    palette.classList.add("hidden");
+    return;
+  }
+
+  palette.classList.remove("hidden");
+  const input = document.getElementById("palette-input") as HTMLInputElement;
+  input.value = "";
+  input.focus();
+  paletteSelectedIndex = 0;
+  renderPaletteResults("");
+}
+
+function renderPaletteResults(query: string) {
+  const results = document.getElementById("palette-results");
+  if (!results) return;
+
+  const commands = getCommands();
+  const q = query.toLowerCase();
+  const filtered = q ? commands.filter(c => c.label.toLowerCase().includes(q)) : commands;
+
+  if (paletteSelectedIndex >= filtered.length) paletteSelectedIndex = 0;
+
+  results.innerHTML = filtered.map((cmd, i) => {
+    const active = i === paletteSelectedIndex ? " active" : "";
+    const shortcut = cmd.shortcut ? `<span class="shortcut">${cmd.shortcut}</span>` : "";
+    return `<div class="palette-item${active}" data-index="${i}"><span>${escapeHtml(cmd.label)}</span>${shortcut}</div>`;
+  }).join("");
+
+  results.querySelectorAll(".palette-item").forEach(el => {
+    el.addEventListener("click", () => {
+      const idx = parseInt((el as HTMLElement).dataset.index || "0");
+      const cmd = filtered[idx];
+      toggleCommandPalette();
+      cmd.action();
+    });
+  });
+}
+
+function handlePaletteKey(e: KeyboardEvent) {
+  const palette = document.getElementById("command-palette");
+  if (!palette || palette.classList.contains("hidden")) return;
+
+  const input = document.getElementById("palette-input") as HTMLInputElement;
+  const q = input.value.toLowerCase();
+  const commands = getCommands();
+  const filtered = q ? commands.filter(c => c.label.toLowerCase().includes(q)) : commands;
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    paletteSelectedIndex = Math.min(paletteSelectedIndex + 1, filtered.length - 1);
+    renderPaletteResults(input.value);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    paletteSelectedIndex = Math.max(paletteSelectedIndex - 1, 0);
+    renderPaletteResults(input.value);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (filtered[paletteSelectedIndex]) {
+      const cmd = filtered[paletteSelectedIndex];
+      toggleCommandPalette();
+      cmd.action();
+    }
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    toggleCommandPalette();
+  }
+}
+
+// --- File search ---
+
+let fileSearchCache: string[] = [];
+let fileSearchSelectedIndex = 0;
+
+async function openFileSearch() {
+  if (!currentFolderPath) {
+    flashStatus("Open a folder first", "var(--warning)");
+    return;
+  }
+
+  const dialog = document.getElementById("file-search");
+  if (!dialog) return;
+
+  if (!dialog.classList.contains("hidden")) {
+    dialog.classList.add("hidden");
+    return;
+  }
+
+  dialog.classList.remove("hidden");
+  const input = document.getElementById("filesearch-input") as HTMLInputElement;
+  input.value = "";
+  input.focus();
+  fileSearchSelectedIndex = 0;
+
+  try {
+    fileSearchCache = await invoke<string[]>("list_files_recursive", { path: currentFolderPath, maxDepth: 5 });
+  } catch {
+    fileSearchCache = [];
+  }
+
+  renderFileSearchResults("");
+}
+
+function closeFileSearch() {
+  const dialog = document.getElementById("file-search");
+  if (dialog) dialog.classList.add("hidden");
+}
+
+function renderFileSearchResults(query: string) {
+  const results = document.getElementById("filesearch-results");
+  if (!results) return;
+
+  const q = query.toLowerCase();
+  const filtered = q
+    ? fileSearchCache.filter(f => f.toLowerCase().includes(q)).slice(0, 50)
+    : fileSearchCache.slice(0, 50);
+
+  if (fileSearchSelectedIndex >= filtered.length) fileSearchSelectedIndex = 0;
+
+  const prefix = currentFolderPath ? currentFolderPath + "/" : "";
+
+  results.innerHTML = filtered.map((f, i) => {
+    const active = i === fileSearchSelectedIndex ? " active" : "";
+    const name = f.split("/").pop()!;
+    const rel = f.startsWith(prefix) ? f.slice(prefix.length) : f;
+    const dir = rel.substring(0, rel.lastIndexOf("/"));
+    return `<div class="filesearch-item${active}" data-index="${i}" data-path="${f.replace(/"/g, "&quot;")}"><span>${escapeHtml(name)}</span><span class="filesearch-path">${escapeHtml(dir)}</span></div>`;
+  }).join("");
+
+  results.querySelectorAll(".filesearch-item").forEach(el => {
+    el.addEventListener("click", () => {
+      const path = (el as HTMLElement).dataset.path!;
+      closeFileSearch();
+      openFile(path);
+    });
+  });
+}
+
+function handleFileSearchKey(e: KeyboardEvent) {
+  const dialog = document.getElementById("file-search");
+  if (!dialog || dialog.classList.contains("hidden")) return;
+
+  const input = document.getElementById("filesearch-input") as HTMLInputElement;
+  const q = input.value.toLowerCase();
+  const filtered = q
+    ? fileSearchCache.filter(f => f.toLowerCase().includes(q)).slice(0, 50)
+    : fileSearchCache.slice(0, 50);
+
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    fileSearchSelectedIndex = Math.min(fileSearchSelectedIndex + 1, filtered.length - 1);
+    renderFileSearchResults(input.value);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    fileSearchSelectedIndex = Math.max(fileSearchSelectedIndex - 1, 0);
+    renderFileSearchResults(input.value);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    if (filtered[fileSearchSelectedIndex]) {
+      closeFileSearch();
+      openFile(filtered[fileSearchSelectedIndex]);
+    }
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeFileSearch();
+  }
 }
 
 // --- Auto update ---
@@ -860,7 +1623,7 @@ window.addEventListener("DOMContentLoaded", () => {
     state: EditorState.create({
       doc: SAMPLE_CONTENT,
       extensions: [
-        lineNumbers(),
+        lineNumbersCompartment.of(showLineNumbers ? lineNumbers() : []),
         highlightActiveLine(),
         highlightActiveLineGutter(),
         history(),
@@ -868,18 +1631,23 @@ window.addEventListener("DOMContentLoaded", () => {
         closeBrackets(),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         markdown({ base: markdownLanguage, codeLanguages: languages }),
+        search(),
         themeCompartment.of(getEffectiveTheme() === "dark" ? oneDark : editorLightTheme),
         editorFillTheme,
         keymap.of([
           ...defaultKeymap,
           ...historyKeymap,
+          ...searchKeymap,
           indentWithTab,
           { key: "Mod-o", run: () => { openFileDialog(); return true; } },
           { key: "Mod-s", run: () => { saveFile(); return true; } },
+          { key: "Mod-n", run: () => { newFile(); return true; } },
           { key: "Mod-p", run: () => { togglePreview(); return true; } },
           { key: "Mod-b", run: () => { toggleSidebar(); return true; } },
           { key: "Mod-e", run: () => { toggleReadMode(); return true; } },
           { key: "Mod-Shift-c", run: () => { copyFormattedHTML(); return true; } },
+          { key: "Mod-Shift-p", run: () => { toggleCommandPalette(); return true; } },
+          { key: "Mod-Shift-f", run: () => { openFileSearch(); return true; } },
           { key: "Mod-=", run: () => { zoomIn(); return true; } },
           { key: "Mod--", run: () => { zoomOut(); return true; } },
           { key: "Mod-0", run: () => { zoomReset(); return true; } },
@@ -902,7 +1670,6 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!btn || !menu) return;
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      // Close other dropdowns
       document.querySelectorAll(".dropdown-menu").forEach(m => {
         if (m !== menu) m.classList.add("hidden");
       });
@@ -911,19 +1678,24 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.addEventListener("click", () => {
     document.querySelectorAll(".dropdown-menu").forEach(m => m.classList.add("hidden"));
+    hideContextMenu();
   });
 
   // File menu items
+  document.getElementById("btn-new")?.addEventListener("click", () => newFile());
   document.getElementById("btn-open")?.addEventListener("click", () => openFileDialog());
   document.getElementById("btn-open-folder")?.addEventListener("click", () => openFolder());
   document.getElementById("btn-recent")?.addEventListener("click", () => toggleRecentPanel());
   document.getElementById("btn-save")?.addEventListener("click", () => saveFile());
+  document.getElementById("btn-autosave")?.addEventListener("click", () => toggleAutoSave());
   document.getElementById("btn-export-pdf")?.addEventListener("click", () => exportPDF());
 
   // View menu items
   document.getElementById("btn-toggle-sidebar")?.addEventListener("click", () => toggleSidebar());
   document.getElementById("btn-toggle-preview")?.addEventListener("click", () => togglePreview());
   document.getElementById("btn-read-mode")?.addEventListener("click", () => toggleReadMode());
+  document.getElementById("btn-toggle-outline")?.addEventListener("click", () => toggleOutline());
+  document.getElementById("btn-toggle-linenumbers")?.addEventListener("click", () => toggleLineNumbers());
 
   // Theme
   document.getElementById("btn-theme")?.addEventListener("click", () => cycleTheme());
@@ -939,8 +1711,62 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-zoom-in")?.addEventListener("click", zoomIn);
   document.getElementById("btn-zoom-out")?.addEventListener("click", zoomOut);
 
+  // Sidebar action buttons
+  document.getElementById("btn-sidebar-new-file")?.addEventListener("click", async () => {
+    if (!currentFolderPath) {
+      await openFolder();
+      if (!currentFolderPath) return;
+    }
+    const name = await showInputDialog("File name:", "untitled.md");
+    if (!name) return;
+    try {
+      await invoke("create_file", { path: `${currentFolderPath}/${name}` });
+      refreshSidebar();
+      openFile(`${currentFolderPath}/${name}`);
+    } catch (e) {
+      flashStatus(`Error: ${e}`, "var(--error)", 3000);
+    }
+  });
+  document.getElementById("btn-sidebar-new-folder")?.addEventListener("click", async () => {
+    if (!currentFolderPath) {
+      await openFolder();
+      if (!currentFolderPath) return;
+    }
+    const name = await showInputDialog("Folder name:");
+    if (!name) return;
+    invoke("create_directory", { path: `${currentFolderPath}/${name}` }).then(() => {
+      refreshSidebar();
+    }).catch(e => flashStatus(`Error: ${e}`, "var(--error)", 3000));
+  });
+  document.getElementById("btn-sidebar-outline")?.addEventListener("click", () => toggleOutline());
+
+  // Context menu items
+  document.getElementById("ctx-new-file")?.addEventListener("click", ctxNewFile);
+  document.getElementById("ctx-new-folder")?.addEventListener("click", ctxNewFolder);
+  document.getElementById("ctx-rename")?.addEventListener("click", ctxRename);
+  document.getElementById("ctx-delete")?.addEventListener("click", ctxDelete);
+
+  // Command palette
+  document.getElementById("palette-input")?.addEventListener("input", (e) => {
+    paletteSelectedIndex = 0;
+    renderPaletteResults((e.target as HTMLInputElement).value);
+  });
+  document.getElementById("palette-input")?.addEventListener("keydown", handlePaletteKey);
+  document.getElementById("palette-backdrop")?.addEventListener("click", toggleCommandPalette);
+
+  // File search
+  document.getElementById("filesearch-input")?.addEventListener("input", (e) => {
+    fileSearchSelectedIndex = 0;
+    renderFileSearchResults((e.target as HTMLInputElement).value);
+  });
+  document.getElementById("filesearch-input")?.addEventListener("keydown", handleFileSearchKey);
+  document.getElementById("filesearch-backdrop")?.addEventListener("click", closeFileSearch);
+
   // Divider drag
   initDividerDrag();
+
+  // Sidebar resize
+  initSidebarResize();
 
   // Tauri drag & drop
   initDragDrop();
@@ -963,16 +1789,13 @@ window.addEventListener("DOMContentLoaded", () => {
     const href = anchor.getAttribute("href");
     if (!href) return;
 
-    // External URL — open in system browser
     if (/^https?:\/\//.test(href)) {
       invoke("plugin:opener|open_url", { url: href });
       return;
     }
 
-    // Anchor link — scroll within preview
     if (href.startsWith("#")) return;
 
-    // Relative path — resolve against current file's directory
     const textExts = [".md", ".markdown", ".txt", ".yaml", ".yml", ".json", ".toml", ".xml", ".csv", ".log"];
     const ext = href.includes(".") ? "." + href.split(".").pop()!.toLowerCase() : "";
     if (!textExts.includes(ext)) return;
@@ -984,7 +1807,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // GitHub link — open in system browser
+  // GitHub link
   document.getElementById("status-github")?.addEventListener("click", (e) => {
     e.preventDefault();
     invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" });
@@ -994,6 +1817,8 @@ window.addEventListener("DOMContentLoaded", () => {
   updateCursorPosition(editor);
   updatePreview(SAMPLE_CONTENT);
   updateWordCount(SAMPLE_CONTENT);
+  updateAutoSaveUI();
+  updateLineNumbersUI();
 
   // Update theme label
   const themeLabel = document.getElementById("btn-theme-label");
@@ -1002,6 +1827,22 @@ window.addEventListener("DOMContentLoaded", () => {
     themeLabel.textContent = `Theme: ${labels[currentThemeMode]}`;
   }
 
-  // Check for updates after 3s so it doesn't block startup
+  // Restore last folder in sidebar
+  if (currentFolderPath) {
+    const sidebar = document.getElementById("sidebar");
+    if (sidebar) {
+      sidebar.classList.remove("hidden");
+      loadDirectory(currentFolderPath);
+      updateSidebarTitle(currentFolderPath);
+    }
+  }
+
+  // Start recovery timer
+  scheduleRecovery();
+
+  // Check for crash recovery
+  setTimeout(checkRecovery, 500);
+
+  // Check for updates after 3s
   setTimeout(checkForUpdates, 3000);
 });

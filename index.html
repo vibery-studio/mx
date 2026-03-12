@@ -13,17 +13,20 @@
         <div id="file-info">
           <span id="filename">No file open</span>
           <span id="modified-indicator" class="hidden">●</span>
+          <span id="autosave-indicator" class="hidden">Auto</span>
         </div>
         <div id="toolbar-actions">
           <!-- Dropdown menus -->
           <div class="toolbar-dropdown">
             <button id="btn-file-menu">File <span class="arrow">▾</span></button>
             <div class="dropdown-menu hidden">
+              <div id="btn-new" class="dropdown-item">New File <span class="shortcut">⌘N</span></div>
               <div id="btn-open" class="dropdown-item">Open File <span class="shortcut">⌘O</span></div>
               <div id="btn-open-folder" class="dropdown-item">Open Folder</div>
               <div id="btn-recent" class="dropdown-item">Recent Files</div>
               <div class="dropdown-divider"></div>
               <div id="btn-save" class="dropdown-item">Save <span class="shortcut">⌘S</span></div>
+              <div id="btn-autosave" class="dropdown-item">Auto-save: <span id="autosave-label">Off</span></div>
               <div class="dropdown-divider"></div>
               <div id="btn-export-pdf" class="dropdown-item">Export PDF</div>
             </div>
@@ -34,6 +37,9 @@
               <div id="btn-toggle-sidebar" class="dropdown-item">Toggle Sidebar <span class="shortcut">⌘B</span></div>
               <div id="btn-toggle-preview" class="dropdown-item">Toggle Preview <span class="shortcut">⌘P</span></div>
               <div id="btn-read-mode" class="dropdown-item">Read Mode <span class="shortcut">⌘E</span></div>
+              <div class="dropdown-divider"></div>
+              <div id="btn-toggle-outline" class="dropdown-item">Toggle Outline</div>
+              <div id="btn-toggle-linenumbers" class="dropdown-item">Line Numbers: <span id="linenumbers-label">On</span></div>
               <div class="dropdown-divider"></div>
               <div id="btn-theme" class="dropdown-item"><span id="btn-theme-label">Theme: System</span></div>
             </div>
@@ -63,16 +69,58 @@
       <div id="recent-panel" class="hidden">
         <div id="recent-list"></div>
       </div>
+      <!-- Recovery banner -->
+      <div id="recovery-banner" class="hidden">
+        <span id="recovery-message">Unsaved changes recovered.</span>
+        <button id="recovery-restore">Restore</button>
+        <button id="recovery-dismiss">Dismiss</button>
+      </div>
       <div id="editor-container">
         <div id="sidebar" class="hidden">
           <div id="sidebar-header">
             <span id="sidebar-title">Files</span>
+            <div id="sidebar-actions">
+              <button id="btn-sidebar-new-file" title="New File">+</button>
+              <button id="btn-sidebar-new-folder" title="New Folder">📁</button>
+              <button id="btn-sidebar-outline" title="Toggle Outline">¶</button>
+            </div>
           </div>
           <div id="sidebar-tree"></div>
+          <div id="outline-panel" class="hidden">
+            <div id="outline-header">
+              <span>Outline</span>
+            </div>
+            <div id="outline-list"></div>
+          </div>
         </div>
+        <div id="sidebar-resizer"></div>
         <div id="editor-pane"></div>
         <div id="divider"></div>
         <div id="preview-pane"></div>
+      </div>
+      <!-- Context menu -->
+      <div id="context-menu" class="hidden">
+        <div id="ctx-new-file" class="ctx-item">New File</div>
+        <div id="ctx-new-folder" class="ctx-item">New Folder</div>
+        <div class="ctx-divider"></div>
+        <div id="ctx-rename" class="ctx-item">Rename</div>
+        <div id="ctx-delete" class="ctx-item ctx-danger">Delete</div>
+      </div>
+      <!-- Command palette -->
+      <div id="command-palette" class="hidden">
+        <div id="palette-backdrop"></div>
+        <div id="palette-dialog">
+          <input id="palette-input" type="text" placeholder="Type a command…" autocomplete="off" />
+          <div id="palette-results"></div>
+        </div>
+      </div>
+      <!-- File search -->
+      <div id="file-search" class="hidden">
+        <div id="filesearch-backdrop"></div>
+        <div id="filesearch-dialog">
+          <input id="filesearch-input" type="text" placeholder="Search files…" autocomplete="off" />
+          <div id="filesearch-results"></div>
+        </div>
       </div>
       <div id="statusbar">
         <span id="status-position">Ln 1, Col 1</span>

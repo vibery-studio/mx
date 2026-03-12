@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
@@ -94,6 +94,137 @@ fn get_home_dir() -> Result<String, String> {
 #[tauri::command]
 fn get_initial_file() -> Option<String> {
     INITIAL_FILE.lock().unwrap().take()
+}
+
+#[tauri::command]
+fn create_file(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if p.exists() {
+        return Err("File already exists".to_string());
+    }
+    fs::write(&p, "").map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_directory(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if p.exists() {
+        return Err("Directory already exists".to_string());
+    }
+    fs::create_dir(&p).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_entry(path: String) -> Result<(), String> {
+    trash::delete(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_entry(old_path: String, new_path: String) -> Result<(), String> {
+    let np = PathBuf::from(&new_path);
+    if np.exists() {
+        return Err("Target already exists".to_string());
+    }
+    fs::rename(&old_path, &new_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_files_recursive(path: String, max_depth: u32) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(&path);
+    let mut results = Vec::new();
+    let ignore = ["node_modules", ".git", "target", ".DS_Store", "__pycache__"];
+    fn walk(dir: &Path, depth: u32, max_depth: u32, results: &mut Vec<String>, ignore: &[&str]) {
+        if depth > max_depth { return; }
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || ignore.contains(&name.as_str()) { continue; }
+            let path = entry.path();
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_dir() {
+                    walk(&path, depth + 1, max_depth, results, ignore);
+                } else {
+                    results.push(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    walk(&root, 0, max_depth, &mut results, &ignore);
+    results.sort();
+    Ok(results)
+}
+
+#[derive(Serialize, Deserialize)]
+struct RecoveryInfo {
+    original_path: String,
+    recovery_path: String,
+    timestamp: u64,
+}
+
+fn get_recovery_dir() -> Result<PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let dir = PathBuf::from(home).join(".mx").join("recovery");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn path_to_recovery_name(path: &str) -> String {
+    path.replace('/', "_").replace('\\', "_").replace(' ', "-")
+}
+
+#[tauri::command]
+fn save_recovery(original_path: String, content: String) -> Result<(), String> {
+    let dir = get_recovery_dir()?;
+    let name = path_to_recovery_name(&original_path);
+    let meta = format!("---mx-recovery---\n{}\n---\n", original_path);
+    fs::write(dir.join(&name), format!("{}{}", meta, content)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_recovery_files() -> Result<Vec<RecoveryInfo>, String> {
+    let dir = get_recovery_dir()?;
+    let mut results = Vec::new();
+    for entry in fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+        let path = entry.path();
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Some(rest) = content.strip_prefix("---mx-recovery---\n") {
+                if let Some(idx) = rest.find("\n---\n") {
+                    let original = rest[..idx].to_string();
+                    let ts = entry.metadata().ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    results.push(RecoveryInfo {
+                        original_path: original,
+                        recovery_path: path.to_string_lossy().to_string(),
+                        timestamp: ts,
+                    });
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+fn read_recovery_content(recovery_path: String) -> Result<String, String> {
+    let content = fs::read_to_string(&recovery_path).map_err(|e| e.to_string())?;
+    if let Some(rest) = content.strip_prefix("---mx-recovery---\n") {
+        if let Some(idx) = rest.find("\n---\n") {
+            return Ok(rest[idx + 5..].to_string());
+        }
+    }
+    Err("Invalid recovery file".to_string())
+}
+
+#[tauri::command]
+fn delete_recovery(recovery_path: String) -> Result<(), String> {
+    let _ = fs::remove_file(&recovery_path);
+    Ok(())
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -246,7 +377,7 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

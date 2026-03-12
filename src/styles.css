@@ -689,6 +689,33 @@ body {
   /* nested container for child entries */
 }
 
+/* Drag & drop */
+.tree-item.dragging {
+  opacity: 0.4;
+}
+
+.tree-item.drag-over {
+  background: var(--active-bg);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+.drag-ghost {
+  position: fixed;
+  z-index: 400;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--accent);
+  font-family: var(--font-ui);
+  box-shadow: 0 2px 8px var(--shadow);
+  white-space: nowrap;
+}
+
 /* ── Recent Panel ── */
 
 #recent-panel {
@@ -734,7 +761,326 @@ body {
   font-size: 12px;
 }
 
-/* ── Zoom indicator (in toolbar) ── */
+/* ── Autosave indicator ── */
+
+#autosave-indicator {
+  font-size: 10px;
+  color: var(--success);
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+/* ── Sidebar header actions ── */
+
+#sidebar-header {
+  justify-content: space-between;
+}
+
+#sidebar-actions {
+  display: flex;
+  gap: 2px;
+}
+
+#sidebar-actions button {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+#sidebar-actions button:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+/* ── Sidebar resizer ── */
+
+#sidebar-resizer {
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+#sidebar.hidden + #sidebar-resizer {
+  display: none;
+}
+
+#sidebar-resizer:hover,
+#sidebar-resizer:active {
+  background: var(--accent);
+}
+
+/* ── Context menu ── */
+
+#context-menu {
+  position: fixed;
+  z-index: 200;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 160px;
+  box-shadow: 0 4px 12px var(--shadow);
+}
+
+.ctx-item {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+.ctx-item:hover {
+  background: var(--hover-bg);
+}
+
+.ctx-item.ctx-danger {
+  color: var(--error);
+}
+
+.ctx-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* ── Rename inline input ── */
+
+.tree-rename-input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  outline: none;
+  width: 100%;
+  min-width: 60px;
+}
+
+/* ── Command palette ── */
+
+#command-palette,
+#file-search {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+}
+
+#palette-backdrop,
+#filesearch-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+}
+
+#palette-dialog,
+#filesearch-dialog {
+  position: absolute;
+  top: 15%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 500px;
+  max-width: 90vw;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px var(--shadow);
+  overflow: hidden;
+}
+
+#palette-input,
+#filesearch-input {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-family: var(--font-ui);
+  background: var(--bg);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  outline: none;
+}
+
+#palette-results,
+#filesearch-results {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.palette-item,
+.filesearch-item {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-ui);
+}
+
+.palette-item:hover,
+.palette-item.active,
+.filesearch-item:hover,
+.filesearch-item.active {
+  background: var(--hover-bg);
+}
+
+.palette-item .shortcut {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.filesearch-item .filesearch-path {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Outline panel ── */
+
+#outline-panel {
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  max-height: 50%;
+  overflow-y: auto;
+}
+
+#outline-header {
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.outline-item {
+  padding: 3px 12px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-ui);
+}
+
+.outline-item:hover {
+  background: var(--hover-bg);
+}
+
+.outline-h1 { padding-left: 12px; font-weight: 600; }
+.outline-h2 { padding-left: 24px; }
+.outline-h3 { padding-left: 36px; }
+.outline-h4 { padding-left: 48px; color: var(--muted); }
+.outline-h5 { padding-left: 60px; color: var(--muted); }
+.outline-h6 { padding-left: 72px; color: var(--muted); }
+
+/* ── Recovery banner ── */
+
+#recovery-banner {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+#recovery-banner button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#recovery-banner button:hover {
+  background: var(--hover-bg);
+}
+
+#recovery-restore {
+  border-color: var(--accent) !important;
+  color: var(--accent) !important;
+}
+
+/* ── CM6 Search panel theme override ── */
+
+.cm-panel.cm-search {
+  background: var(--surface) !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  font-family: var(--font-ui) !important;
+  font-size: 12px !important;
+  padding: 6px 12px !important;
+}
+
+.cm-panel.cm-search input,
+.cm-panel.cm-search button {
+  font-family: var(--font-ui) !important;
+  font-size: 12px !important;
+}
+
+.cm-panel.cm-search input {
+  background: var(--bg) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 3px !important;
+  padding: 2px 6px !important;
+  outline: none !important;
+}
+
+.cm-panel.cm-search button {
+  background: transparent !important;
+  color: var(--text) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 3px !important;
+  padding: 2px 8px !important;
+  cursor: pointer !important;
+}
+
+.cm-panel.cm-search button:hover {
+  background: var(--hover-bg) !important;
+}
+
+.cm-panel.cm-search label {
+  color: var(--muted) !important;
+}
+
+.cm-searchMatch {
+  background: rgba(137, 180, 250, 0.25) !important;
+}
+
+.cm-searchMatch-selected {
+  background: rgba(137, 180, 250, 0.5) !important;
+}
 
 /* ── Print ── */
 
