@@ -15,8 +15,8 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            target: aarch64-apple-darwin
-            label: macOS-arm64
+            target: universal-apple-darwin
+            label: macOS-universal
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows-x64
@@ -34,7 +34,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target == 'universal-apple-darwin' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.target }}
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -120,6 +120,10 @@ jobs:
             "pub_date": "${DATE}",
             "platforms": {
               "darwin-aarch64": {
+                "signature": "${MAC_SIG}",
+                "url": "${BASE}/${MAC_FILE}"
+              },
+              "darwin-x86_64": {
                 "signature": "${MAC_SIG}",
                 "url": "${BASE}/${MAC_FILE}"
               },
