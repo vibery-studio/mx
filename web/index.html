@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mx — Markdown Editor</title>
+    <meta name="description" content="Fast, lightweight markdown editor with live preview, Mermaid diagrams, KaTeX math, and YAML frontmatter. No signup, no cloud — runs in your browser." />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Desktop download banner -->
+      <div id="banner">
+        <span>mx web</span>
+        <a id="banner-download" href="https://github.com/vibery-studio/mx/releases/latest" target="_blank" rel="noopener">Get the desktop app for file associations, PDF export & auto-update →</a>
+        <button id="banner-close" title="Dismiss">✕</button>
+      </div>
+      <div id="toolbar">
+        <div id="file-info">
+          <span id="filename">Untitled</span>
+          <span id="modified-indicator" class="hidden">●</span>
+        </div>
+        <div id="toolbar-actions">
+          <div class="toolbar-dropdown">
+            <button id="btn-file-menu">File <span class="arrow">▾</span></button>
+            <div class="dropdown-menu hidden">
+              <div id="btn-new" class="dropdown-item">New</div>
+              <div id="btn-open" class="dropdown-item">Open File</div>
+              <div id="btn-save" class="dropdown-item">Save <span class="shortcut">⌘S</span></div>
+              <div id="btn-save-as" class="dropdown-item">Save As…</div>
+              <div class="dropdown-divider"></div>
+              <div id="btn-export-html" class="dropdown-item">Export HTML</div>
+              <div class="dropdown-divider"></div>
+              <div id="btn-recent" class="dropdown-item">Recent Files</div>
+            </div>
+          </div>
+          <div class="toolbar-dropdown">
+            <button id="btn-view-menu">View <span class="arrow">▾</span></button>
+            <div class="dropdown-menu hidden">
+              <div id="btn-toggle-preview" class="dropdown-item">Toggle Preview <span class="shortcut">⌘P</span></div>
+              <div id="btn-read-mode" class="dropdown-item">Read Mode <span class="shortcut">⌘E</span></div>
+              <div class="dropdown-divider"></div>
+              <div id="btn-toggle-linenumbers" class="dropdown-item">Line Numbers: <span id="linenumbers-label">On</span></div>
+              <div id="btn-zen-mode" class="dropdown-item">Zen Mode</div>
+              <div class="dropdown-divider"></div>
+              <div id="btn-font-menu" class="dropdown-item">Font: <span id="font-label">System</span></div>
+              <div class="dropdown-divider"></div>
+              <div id="btn-theme" class="dropdown-item"><span id="btn-theme-label">Theme: System</span></div>
+            </div>
+          </div>
+
+          <span class="toolbar-sep"></span>
+          <div class="toolbar-dropdown">
+            <button id="btn-copy-html" title="Copy (Cmd+Shift+C)">Copy <span class="arrow">▾</span></button>
+            <div class="dropdown-menu hidden" id="copy-dropdown">
+              <div id="btn-copy-formatted" class="dropdown-item">Copy Formatted HTML <span class="shortcut">⌘⇧C</span></div>
+              <div id="btn-copy-raw" class="dropdown-item">Copy Raw Markdown</div>
+              <div id="btn-copy-plain" class="dropdown-item">Copy Plain Text</div>
+            </div>
+          </div>
+          <span class="toolbar-sep"></span>
+          <button id="btn-theme-icon" title="Toggle theme">◐</button>
+          <span class="toolbar-sep"></span>
+          <button id="btn-zoom-out" title="Zoom out">−</button>
+          <span id="status-zoom" class="toolbar-zoom">100%</span>
+          <button id="btn-zoom-in" title="Zoom in">+</button>
+        </div>
+        <div id="token-info">
+          <span id="token-count">0 words</span>
+          <span id="cost-estimate" class="dim">0 lines</span>
+        </div>
+      </div>
+      <div id="format-bar">
+        <button class="fmt-btn" data-fmt="bold" title="Bold">B</button>
+        <button class="fmt-btn" data-fmt="italic" title="Italic"><i>I</i></button>
+        <button class="fmt-btn" data-fmt="heading" title="Heading">H</button>
+        <button class="fmt-btn" data-fmt="link" title="Link">&#128279;</button>
+        <button class="fmt-btn" data-fmt="code" title="Code">`</button>
+        <button class="fmt-btn" data-fmt="quote" title="Quote">&#10077;</button>
+        <button class="fmt-btn" data-fmt="list" title="List">&#8226;</button>
+        <button class="fmt-btn" data-fmt="hr" title="Horizontal Rule">&#8212;</button>
+      </div>
+      <div id="recent-panel" class="hidden">
+        <div id="recent-list"></div>
+      </div>
+      <div id="editor-container">
+        <div id="editor-pane"></div>
+        <div id="divider"></div>
+        <div id="preview-pane"></div>
+      </div>
+      <div id="statusbar">
+        <span id="status-position">Ln 1, Col 1</span>
+        <span id="status-words">0 words</span>
+        <span id="status-selection"></span>
+        <span id="status-tokens">0 chars</span>
+        <a id="btn-download-desktop" href="https://github.com/vibery-studio/mx/releases/latest" target="_blank" rel="noopener">Desktop App ↓</a>
+      </div>
+      <div id="image-lightbox" class="hidden"></div>
+      <div id="command-palette" class="hidden">
+        <div id="palette-backdrop"></div>
+        <div id="palette-dialog">
+          <input id="palette-input" type="text" placeholder="Type a command…" autocomplete="off" />
+          <div id="palette-results"></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
