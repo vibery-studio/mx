@@ -44,6 +44,7 @@
               <div id="btn-toggle-linenumbers" class="dropdown-item">Line Numbers: <span id="linenumbers-label">On</span></div>
               <div id="btn-zen-mode" class="dropdown-item">Zen Mode</div>
               <div class="dropdown-divider"></div>
+              <div id="btn-font-menu" class="dropdown-item">Font: <span id="font-label">System</span></div>
               <div id="btn-theme" class="dropdown-item"><span id="btn-theme-label">Theme: System</span></div>
             </div>
           </div>
@@ -81,6 +82,17 @@
       <div id="recent-panel" class="hidden">
         <div id="recent-list"></div>
       </div>
+      <div id="format-bar">
+        <button class="fmt-btn" data-fmt="bold" title="Bold">B</button>
+        <button class="fmt-btn" data-fmt="italic" title="Italic"><i>I</i></button>
+        <button class="fmt-btn" data-fmt="heading" title="Heading">H</button>
+        <button class="fmt-btn" data-fmt="link" title="Link">&#128279;</button>
+        <button class="fmt-btn" data-fmt="code" title="Code">`</button>
+        <button class="fmt-btn" data-fmt="quote" title="Quote">&#10077;</button>
+        <button class="fmt-btn" data-fmt="list" title="List">&#8226;</button>
+        <button class="fmt-btn" data-fmt="hr" title="Horizontal Rule">&#8212;</button>
+      </div>
+      <div id="breadcrumb" class="hidden"></div>
       <!-- Recovery banner -->
       <div id="recovery-banner" class="hidden">
         <span id="recovery-message">Unsaved changes recovered.</span>

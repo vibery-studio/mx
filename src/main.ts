@@ -41,6 +41,14 @@ const RECOVERY_INTERVAL = 30000;
 let showLineNumbers = localStorage.getItem("mx-line-numbers") !== "false";
 const lineNumbersCompartment = new Compartment();
 
+// Font selection state
+const FONT_OPTIONS = ["System", "Inter", "Georgia", "Merriweather", "JetBrains Mono"] as const;
+let currentFont: string = localStorage.getItem("mx-font") || "System";
+
+// Scroll sync state
+let scrollSyncEnabled = true;
+let isScrollSyncing = false;
+
 // Context menu state
 let contextMenuTarget: { path: string; isDir: boolean; parentPath: string } | null = null;
 
@@ -102,6 +110,28 @@ function zoomIn() { zoomLevel = Math.min(200, zoomLevel + 10); applyZoom(); }
 function zoomOut() { zoomLevel = Math.max(50, zoomLevel - 10); applyZoom(); }
 function zoomReset() { zoomLevel = 100; applyZoom(); }
 
+// --- Font selection ---
+
+function cycleFont() {
+  const idx = FONT_OPTIONS.indexOf(currentFont as typeof FONT_OPTIONS[number]);
+  currentFont = FONT_OPTIONS[(idx + 1) % FONT_OPTIONS.length];
+  localStorage.setItem("mx-font", currentFont);
+  applyFont();
+}
+
+function applyFont() {
+  const previewPane = $("#preview-pane");
+  if (previewPane) {
+    if (currentFont === "System") {
+      previewPane.style.removeProperty("--font-reading");
+    } else {
+      previewPane.style.setProperty("--font-reading", `"${currentFont}", var(--font-ui)`);
+    }
+  }
+  const label = document.getElementById("font-label");
+  if (label) label.textContent = currentFont;
+}
+
 // --- Theme ---
 
 type ThemeMode = "auto" | "light" | "dark";
@@ -157,7 +187,27 @@ const $ = (sel: string) => document.querySelector(sel) as HTMLElement;
 
 // --- Markdown-it with KaTeX ---
 
-const md = new MarkdownIt({ html: true, linkify: true, typographer: true }).use(footnote);
+const md = new MarkdownIt({ html: true, linkify: true, typographer: true, breaks: true }).use(footnote);
+
+// --- Wikilinks support ---
+
+md.inline.ruler.push("wikilink", (state, silent) => {
+  if (state.src.charAt(state.pos) !== "[" || state.src.charAt(state.pos + 1) !== "[") return false;
+  const start = state.pos + 2;
+  const end = state.src.indexOf("]]", start);
+  if (end === -1) return false;
+  if (!silent) {
+    const content = state.src.slice(start, end);
+    const token = state.push("wikilink_open", "a", 1);
+    token.attrSet("href", content.replace(/\s+/g, "-") + ".md");
+    token.attrSet("class", "wikilink");
+    const text = state.push("text", "", 0);
+    text.content = content;
+    state.push("wikilink_close", "a", -1);
+  }
+  state.pos = end + 2;
+  return true;
+});
 
 function renderKaTeX(html: string): string {
   html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_match, tex: string) => {
@@ -317,6 +367,9 @@ function setFilename(path: string | null) {
   currentFilePath = path;
   const el = document.getElementById("filename");
   if (el) el.textContent = path ? path.split("/").pop()! : "No file open";
+  if (path) localStorage.setItem("mx-last-file", path);
+  else localStorage.removeItem("mx-last-file");
+  updateBreadcrumb();
 }
 
 async function saveFile() {
@@ -1376,6 +1429,8 @@ function getCommands(): PaletteCommand[] {
     { label: "Zoom Out", shortcut: "⌘-", action: zoomOut },
     { label: "Zoom Reset", shortcut: "⌘0", action: zoomReset },
     { label: "File Search", shortcut: "⌘⇧F", action: openFileSearch },
+    { label: "Cycle Font", action: cycleFont },
+    { label: "Reload Custom CSS", action: loadCustomCSS },
     { label: "Check for Updates", action: () => doUpdateCheck(true) },
     { label: "About mx", action: () => invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" }) },
   ];
@@ -1822,6 +1877,129 @@ async function checkForUpdates() {
   await doUpdateCheck(false);
 }
 
+// --- Formatting toolbar ---
+
+function applyFormat(fmt: string) {
+  const sel = editor.state.selection.main;
+  const selected = editor.state.sliceDoc(sel.from, sel.to);
+  let insert = "";
+  let from = sel.from;
+  let to = sel.to;
+
+  switch (fmt) {
+    case "bold":
+      insert = `**${selected || "bold"}**`;
+      break;
+    case "italic":
+      insert = `*${selected || "italic"}*`;
+      break;
+    case "heading": {
+      const line = editor.state.doc.lineAt(sel.from);
+      from = line.from;
+      to = line.to;
+      insert = `### ${line.text.replace(/^#+\s*/, "")}`;
+      break;
+    }
+    case "link":
+      insert = selected ? `[${selected}](url)` : `[link](url)`;
+      break;
+    case "code":
+      insert = `\`${selected || "code"}\``;
+      break;
+    case "quote": {
+      const qline = editor.state.doc.lineAt(sel.from);
+      from = qline.from;
+      to = qline.to;
+      insert = `> ${qline.text}`;
+      break;
+    }
+    case "list": {
+      const lline = editor.state.doc.lineAt(sel.from);
+      from = lline.from;
+      to = lline.to;
+      insert = `- ${lline.text}`;
+      break;
+    }
+    case "hr":
+      insert = `\n---\n`;
+      break;
+    default:
+      return;
+  }
+
+  editor.dispatch({ changes: { from, to, insert } });
+  editor.focus();
+}
+
+// --- Breadcrumb navigation ---
+
+function updateBreadcrumb() {
+  const el = document.getElementById("breadcrumb");
+  if (!el) return;
+  if (!currentFilePath) {
+    el.classList.add("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  const parts = currentFilePath.split("/").filter(Boolean);
+  const display = parts.slice(-4);
+  const startIdx = parts.length - display.length;
+
+  el.innerHTML = display.map((seg, i) => {
+    const fullPath = "/" + parts.slice(0, startIdx + i + 1).join("/");
+    const span = `<span data-path="${fullPath.replace(/"/g, "&quot;")}">${escapeHtml(seg)}</span>`;
+    return i < display.length - 1 ? span + '<span class="sep">/</span>' : span;
+  }).join("");
+
+  el.querySelectorAll("span:not(.sep)").forEach(span => {
+    const s = span as HTMLElement;
+    const isLast = !s.nextElementSibling || !s.nextElementSibling.classList.contains("sep");
+    if (!isLast) {
+      s.addEventListener("click", () => openFolder(s.dataset.path!));
+    }
+  });
+}
+
+// --- Scroll sync ---
+
+function initScrollSync() {
+  const previewPane = document.getElementById("preview-pane");
+  const editorScroll = editor.scrollDOM;
+  if (!previewPane || !editorScroll) return;
+
+  editorScroll.addEventListener("scroll", () => {
+    if (!scrollSyncEnabled || isScrollSyncing || currentViewMode !== "split") return;
+    isScrollSyncing = true;
+    const pct = editorScroll.scrollTop / Math.max(1, editorScroll.scrollHeight - editorScroll.clientHeight);
+    previewPane.scrollTop = pct * (previewPane.scrollHeight - previewPane.clientHeight);
+    requestAnimationFrame(() => { isScrollSyncing = false; });
+  });
+
+  previewPane.addEventListener("scroll", () => {
+    if (!scrollSyncEnabled || isScrollSyncing || currentViewMode !== "split") return;
+    isScrollSyncing = true;
+    const pct = previewPane.scrollTop / Math.max(1, previewPane.scrollHeight - previewPane.clientHeight);
+    editorScroll.scrollTop = pct * (editorScroll.scrollHeight - editorScroll.clientHeight);
+    requestAnimationFrame(() => { isScrollSyncing = false; });
+  });
+}
+
+// --- Custom preview CSS ---
+
+async function loadCustomCSS() {
+  try {
+    const css = await invoke<string>("load_custom_css");
+    if (!css) return;
+    let style = document.getElementById("custom-preview-css") as HTMLStyleElement;
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "custom-preview-css";
+      document.head.appendChild(style);
+    }
+    style.textContent = css;
+  } catch { /* ignore */ }
+}
+
 // --- Init ---
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -1915,6 +2093,17 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-toggle-linenumbers")?.addEventListener("click", () => toggleLineNumbers());
   document.getElementById("btn-zen-mode")?.addEventListener("click", () => toggleZenMode());
 
+  // Font menu
+  document.getElementById("btn-font-menu")?.addEventListener("click", () => cycleFont());
+
+  // Format bar
+  document.querySelectorAll(".fmt-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const fmt = (btn as HTMLElement).dataset.fmt;
+      if (fmt) applyFormat(fmt);
+    });
+  });
+
   // Theme
   document.getElementById("btn-theme")?.addEventListener("click", () => cycleTheme());
 
@@ -2005,9 +2194,14 @@ window.addEventListener("DOMContentLoaded", () => {
     openFile(event.payload);
   });
 
-  // Check for file passed on cold start
+  // Check for file passed on cold start, then session restore
   invoke<string | null>("get_initial_file").then((path) => {
-    if (path) openFile(path);
+    if (path) {
+      openFile(path);
+    } else {
+      const lastFile = localStorage.getItem("mx-last-file");
+      if (lastFile) openFile(lastFile);
+    }
   });
 
   // Image lightbox — click images in preview to zoom
@@ -2095,4 +2289,13 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Check for updates after 3s
   setTimeout(checkForUpdates, 3000);
+
+  // Scroll sync
+  initScrollSync();
+
+  // Custom preview CSS
+  loadCustomCSS();
+
+  // Apply saved font
+  applyFont();
 });
