@@ -38,24 +38,68 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 | Mermaid diagrams | Yes | No |
 | KaTeX math | Yes | MathJax (slow) |
 | YAML frontmatter | Rendered | Raw text |
-| Apple Silicon | Native | Rosetta only |
+| Footnotes / Wikilinks | Yes | No |
+| Code folding | Yes | No |
+| File sidebar + search | Yes | No |
+| Zen mode | Yes | No |
+| Apple Silicon | Native universal | Rosetta only |
 | Bundle size | ~8 MB | ~30 MB |
-| PDF export | Pandoc + Mermaid | Broken |
+| Export | PDF, HTML, DOCX | PDF (broken) |
 | File associations | .md, .yaml, .json, .txt | .md only |
 | Cross-platform | macOS, Windows, Linux | macOS only |
 
 ## Features
 
+### Editor
 - **Live split preview** — markdown-it with syntax highlighting
-- **Mermaid diagrams** — rendered inline, dark theme
+- **Code folding** — collapse/expand blocks via gutter markers
+- **Formatting toolbar** — bold, italic, heading, link, code, quote, list, hr
+- **Search & replace** — Cmd+F / Cmd+H with regex support
+- **Line numbers** — toggleable, with active line highlight
+- **Selection count** — word/character count for selected text in status bar
+
+### Markdown
+- **Mermaid diagrams** — rendered inline, dark/light theme
 - **KaTeX math** — inline `$...$` and display `$$...$$`
 - **YAML frontmatter** — rendered as styled metadata table
-- **Word & character count** — real-time in status bar
-- **File sidebar** — browse directories with emoji icons
-- **Drag & drop** — drop any .md, .yaml, .json, .txt file to open
+- **Footnotes** — `[^1]` syntax via markdown-it-footnote
+- **Wikilinks** — `[[page name]]` renders as clickable link to `page-name.md`
+
+### File Management
+- **File sidebar** — browse directories with drag-to-move reordering
+- **Context menu** — new file, new folder, rename, duplicate, copy path, reveal in Finder, delete
+- **File search** — Cmd+Shift+F fuzzy search across folder
+- **Command palette** — Cmd+Shift+P for quick actions
+- **Breadcrumb navigation** — clickable path segments
+- **Session restore** — reopens last file and folder on launch
+- **Drag & drop** — drop any .md, .yaml, .json, .txt file or folder to open
+- **Recent files** — quick access to recently opened files
+
+### Writing
+- **Auto-save** — configurable, saves after 3s of inactivity
+- **Crash recovery** — periodic recovery snapshots for unsaved work
+- **Zen mode** — Cmd+Shift+Z, hides all chrome for distraction-free writing
+- **Image paste** — paste images from clipboard directly into editor
+- **Image lightbox** — click images in preview to zoom fullscreen
+
+### Export & Copy
+- **Copy modes** — formatted HTML, raw markdown, or plain text
 - **PDF export** — via Pandoc with Mermaid diagram support
-- **Copy formatted** — copy preview as rich HTML for Substack, WordPress, Notion
-- **Resizable split** — drag divider between editor and preview
+- **HTML export** — self-contained HTML with inline CSS, light/dark theme
+- **DOCX export** — via Pandoc
+
+### Customization
+- **Themes** — light, dark, and auto (system) with Catppuccin palette
+- **Font selection** — System, Inter, Georgia, Merriweather, JetBrains Mono
+- **Custom preview CSS** — load your own styles from `~/.mx/preview.css`
+- **Resizable panes** — drag divider between editor and preview, resize sidebar
+- **Zoom** — Cmd+/- to scale editor and preview
+
+### Platform
+- **Word & character count** — real-time in status bar
+- **Auto-update** — checks for updates weekly, downloads in background
+- **File associations** — .md, .markdown, .yaml, .yml, .txt
+- **Cross-platform** — macOS (universal binary), Windows, Linux
 
 ## Keyboard Shortcuts
 
@@ -63,10 +107,17 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 |----------|--------|
 | `Cmd+O` | Open file |
 | `Cmd+S` | Save file |
+| `Cmd+N` | New file |
 | `Cmd+P` | Toggle preview |
 | `Cmd+E` | Read mode (preview only) |
 | `Cmd+B` | Toggle file sidebar |
+| `Cmd+F` | Search in file |
+| `Cmd+H` | Search & replace |
+| `Cmd+Shift+P` | Command palette |
+| `Cmd+Shift+F` | File search |
 | `Cmd+Shift+C` | Copy formatted HTML |
+| `Cmd+Shift+Z` | Zen mode |
+| `Cmd+=` / `Cmd+-` | Zoom in / out |
 
 ## Development
 
