@@ -1962,25 +1962,36 @@ function updateBreadcrumb() {
 
 // --- Scroll sync ---
 
+let scrollSyncSource: "editor" | "preview" | null = null;
+let scrollSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
 function initScrollSync() {
   const previewPane = document.getElementById("preview-pane");
   const editorScroll = editor.scrollDOM;
   if (!previewPane || !editorScroll) return;
 
+  // Track which pane the user is hovering over
+  editorScroll.addEventListener("mouseenter", () => { scrollSyncSource = "editor"; });
+  previewPane.addEventListener("mouseenter", () => { scrollSyncSource = "preview"; });
+
   editorScroll.addEventListener("scroll", () => {
     if (!scrollSyncEnabled || isScrollSyncing || currentViewMode !== "split") return;
+    if (scrollSyncSource !== "editor") return;
     isScrollSyncing = true;
     const pct = editorScroll.scrollTop / Math.max(1, editorScroll.scrollHeight - editorScroll.clientHeight);
     previewPane.scrollTop = pct * (previewPane.scrollHeight - previewPane.clientHeight);
-    requestAnimationFrame(() => { isScrollSyncing = false; });
+    if (scrollSyncTimer) clearTimeout(scrollSyncTimer);
+    scrollSyncTimer = setTimeout(() => { isScrollSyncing = false; }, 100);
   });
 
   previewPane.addEventListener("scroll", () => {
     if (!scrollSyncEnabled || isScrollSyncing || currentViewMode !== "split") return;
+    if (scrollSyncSource !== "preview") return;
     isScrollSyncing = true;
     const pct = previewPane.scrollTop / Math.max(1, previewPane.scrollHeight - previewPane.clientHeight);
     editorScroll.scrollTop = pct * (editorScroll.scrollHeight - editorScroll.clientHeight);
-    requestAnimationFrame(() => { isScrollSyncing = false; });
+    if (scrollSyncTimer) clearTimeout(scrollSyncTimer);
+    scrollSyncTimer = setTimeout(() => { isScrollSyncing = false; }, 100);
   });
 }
 
