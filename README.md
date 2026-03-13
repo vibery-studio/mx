@@ -41,6 +41,7 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 | Footnotes / Wikilinks | Yes | No |
 | Code folding | Yes | No |
 | File sidebar + search | Yes | No |
+| Folder content search | Yes | No |
 | Zen mode | Yes | No |
 | Apple Silicon | Native universal | Rosetta only |
 | Bundle size | ~8 MB | ~30 MB |
@@ -69,6 +70,7 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 - **File sidebar** — browse directories with drag-to-move reordering
 - **Context menu** — new file, new folder, rename, duplicate, copy path (absolute/relative), reveal in Finder, delete
 - **File search** — Cmd+Shift+F fuzzy search across folder
+- **Content search** — Cmd+Opt+F search text inside all files in open folder, jump to exact keyword position
 - **Command palette** — Cmd+Shift+P for quick actions
 - **Breadcrumb navigation** — clickable path segments
 - **Session restore** — reopens last file and folder on launch
@@ -116,6 +118,7 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 | `Cmd+H` | Search & replace |
 | `Cmd+Shift+P` | Command palette |
 | `Cmd+Shift+F` | File search |
+| `Cmd+Opt+F` | Content search (search inside all files) |
 | `Cmd+Shift+C` | Copy formatted HTML |
 | `Cmd+Shift+Z` | Zen mode |
 | `Cmd+=` / `Cmd+-` | Zoom in / out |

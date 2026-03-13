@@ -43,6 +43,7 @@
               <div id="btn-toggle-outline" class="dropdown-item">Toggle Outline</div>
               <div id="btn-toggle-linenumbers" class="dropdown-item">Line Numbers: <span id="linenumbers-label">On</span></div>
               <div id="btn-zen-mode" class="dropdown-item">Zen Mode</div>
+              <div id="btn-content-search" class="dropdown-item">Search in Files <span class="shortcut">⌘⌥F</span></div>
               <div class="dropdown-divider"></div>
               <div id="btn-font-menu" class="dropdown-item">Font: <span id="font-label">System</span></div>
               <div id="btn-theme" class="dropdown-item"><span id="btn-theme-label">Theme: System</span></div>
@@ -102,12 +103,17 @@
       <div id="editor-container">
         <div id="sidebar" class="hidden">
           <div id="sidebar-header">
-            <span id="sidebar-title">Files</span>
+            <span id="sidebar-title" title="Click to show file tree">Files</span>
             <div id="sidebar-actions">
+              <button id="btn-sidebar-search" title="Search in folder (⌘⌥F)">⌕</button>
               <button id="btn-sidebar-new-file" title="New File">+</button>
               <button id="btn-sidebar-new-folder" title="New Folder">📁</button>
               <button id="btn-sidebar-outline" title="Toggle Outline">¶</button>
             </div>
+          </div>
+          <div id="sidebar-search-panel" class="hidden">
+            <input id="sidebar-search-input" type="text" placeholder="Search in files…" autocomplete="off" />
+            <div id="sidebar-search-results"></div>
           </div>
           <div id="sidebar-tree"></div>
           <div id="outline-panel" class="hidden">
@@ -153,6 +159,14 @@
         <div id="filesearch-dialog">
           <input id="filesearch-input" type="text" placeholder="Search files…" autocomplete="off" />
           <div id="filesearch-results"></div>
+        </div>
+      </div>
+      <!-- Content search -->
+      <div id="content-search" class="hidden">
+        <div id="contentsearch-backdrop"></div>
+        <div id="contentsearch-dialog">
+          <input id="contentsearch-input" type="text" placeholder="Search in files…" autocomplete="off" />
+          <div id="contentsearch-results"></div>
         </div>
       </div>
       <div id="statusbar">

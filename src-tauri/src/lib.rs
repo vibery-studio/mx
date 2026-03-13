@@ -160,6 +160,72 @@ fn list_files_recursive(path: String, max_depth: u32) -> Result<Vec<String>, Str
 }
 
 #[derive(Serialize, Deserialize)]
+struct SearchResult {
+    file_path: String,
+    line_number: usize,
+    line_content: String,
+    match_start: usize,
+    match_end: usize,
+}
+
+#[tauri::command]
+fn search_in_files(folder_path: String, query: String) -> Result<Vec<SearchResult>, String> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = PathBuf::from(&folder_path);
+    let ignore = ["node_modules", ".git", "target", ".DS_Store", "__pycache__"];
+    let extensions = ["md", "markdown", "txt"];
+    let query_lower = query.to_lowercase();
+    let max_results = 200usize;
+    let max_file_size = 1_048_576u64;
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    fn walk(dir: &Path, depth: u32, files: &mut Vec<PathBuf>, ignore: &[&str], extensions: &[&str], max_size: u64) {
+        if depth > 5 { return; }
+        let entries = match fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || ignore.contains(&name.as_str()) { continue; }
+            let path = entry.path();
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_dir() {
+                    walk(&path, depth + 1, files, ignore, extensions, max_size);
+                } else if meta.len() <= max_size {
+                    if let Some(ext) = path.extension() {
+                        if extensions.contains(&ext.to_string_lossy().as_ref()) {
+                            files.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    walk(&root, 0, &mut files, &ignore, &extensions, max_file_size);
+
+    let mut results: Vec<SearchResult> = Vec::new();
+    for file_path in files {
+        if results.len() >= max_results { break; }
+        let content = match fs::read_to_string(&file_path) { Ok(c) => c, Err(_) => continue };
+        let path_str = file_path.to_string_lossy().to_string();
+        for (i, line) in content.lines().enumerate() {
+            if results.len() >= max_results { break; }
+            let line_lower = line.to_lowercase();
+            if let Some(pos) = line_lower.find(&query_lower) {
+                results.push(SearchResult {
+                    file_path: path_str.clone(),
+                    line_number: i + 1,
+                    line_content: line.to_string(),
+                    match_start: pos,
+                    match_end: pos + query.len(),
+                });
+            }
+        }
+    }
+    Ok(results)
+}
+
+#[derive(Serialize, Deserialize)]
 struct RecoveryInfo {
     original_path: String,
     recovery_path: String,
@@ -728,7 +794,7 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, search_in_files])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

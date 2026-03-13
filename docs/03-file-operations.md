@@ -12,6 +12,7 @@ flowchart TB
     IPC --> WC[word_count]
     IPC --> LD[list_directory]
     IPC --> HD[get_home_dir]
+    IPC --> SIF[search_in_files]
     RF --> FS[std::fs]
     SF --> FS
     LD --> FS
@@ -26,12 +27,27 @@ flowchart TB
 | `word_count` | `text: String` | `WordCount { chars, words, lines }` | Count chars/words/lines |
 | `list_directory` | `path: String` | `Vec<DirEntry>` | List directory entries |
 | `get_home_dir` | none | `String` | Return `$HOME` |
+| `search_in_files` | `folder_path: String, query: String` | `Vec<SearchResult>` | Case-insensitive keyword search across all `.md`/`.markdown`/`.txt` files |
 
-## 2. Directory Listing
+## 2. Content Search
+
+`search_in_files` recursively walks the folder, reads each eligible file, and searches line-by-line for the query string (case-insensitive). Returns up to 200 `SearchResult` items with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file_path` | `String` | Absolute path to the file |
+| `line_number` | `usize` | 1-based line number of the match |
+| `line_content` | `String` | Full text of the matched line |
+| `match_start` | `usize` | Byte offset of match start within the line |
+| `match_end` | `usize` | Byte offset of match end within the line |
+
+Skips: `node_modules`, `.git`, `target`, `.DS_Store`, `__pycache__`. Ignores files larger than 1 MB.
+
+## 3. Directory Listing
 
 `list_directory` filters dotfiles, sorts directories first then alphabetically (case-insensitive). Returns `DirEntry` with `name`, `path`, `is_dir`, `extension`.
 
-## 3. Frontend File Flow
+## 4. Frontend File Flow
 
 | Action | Trigger | Dialog |
 |--------|---------|--------|
@@ -40,7 +56,7 @@ flowchart TB
 | Drop file | Drag `.md` onto window | None (Tauri drag-drop event) |
 | Browse folder | Toolbar "Folder" button | None (loads sidebar) |
 
-## 4. State Tracking
+## 5. State Tracking
 
 `currentFilePath` tracks the open file. `isModified` flips to `true` on any content change, resets on save. The modified indicator (`●`) shows in the toolbar.
 

@@ -47,6 +47,27 @@ flowchart TB
 
 Flat file browser, 220px wide. Shows directory entries with emoji icons by extension. Directories first, alphabetical sort. Parent `..` entry for navigation. Toggle with `Cmd+B`.
 
+### Sidebar Header Actions
+
+| Button | ID | Action |
+|--------|----|--------|
+| Folder name | `#sidebar-title` | Clickable — exits search mode and returns to file tree |
+| ⌕ | `#btn-sidebar-search` | Toggle content search panel (`Cmd+Opt+F`) |
+| + | `#btn-sidebar-new-file` | New file |
+| 📁 | `#btn-sidebar-new-folder` | New folder |
+| ¶ | `#btn-sidebar-outline` | Toggle outline panel |
+
+### Sidebar Content Search
+
+Activated by the ⌕ button or `Cmd+Opt+F`. Replaces the file tree with an inline search panel (`#sidebar-search-panel`):
+
+1. User types in `#sidebar-search-input` → debounced call to `search_in_files` Rust command
+2. Results render as `.sidebar-search-item` rows — each shows filename, line number, and keyword highlighted in context
+3. Click a result → `openFile(path, skipScrollRestore=true)` + `navigateToSearchResult(result)`:
+   - CodeMirror dispatch: `{ selection: { anchor: lineFrom+matchStart, head: lineFrom+matchEnd }, scrollIntoView: true }`
+   - Double-rAF: wait for all pending animation frames, then sync preview scroll by proportional `scrollTop`
+4. Click folder name → `deactivateSidebarSearch()` restores file tree view
+
 | Extension | Icon |
 |-----------|------|
 | directory | `📁` |

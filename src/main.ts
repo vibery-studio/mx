@@ -567,7 +567,7 @@ async function openFileDialog() {
   if (path) openFile(path as string);
 }
 
-async function openFile(path: string) {
+async function openFile(path: string, skipScrollRestore = false) {
   try {
     saveScrollPosition();
     const result = await invoke<{ path: string; content: string }>("read_file", { path });
@@ -577,7 +577,7 @@ async function openFile(path: string) {
     setFilename(result.path);
     setModified(false);
     addRecentFile(result.path);
-    restoreScrollPosition(result.path);
+    if (!skipScrollRestore) restoreScrollPosition(result.path);
   } catch (e) {
     console.error("Open failed:", e);
   }
@@ -1585,6 +1585,7 @@ function getCommands(): PaletteCommand[] {
     { label: "Zoom Out", shortcut: "⌘-", action: zoomOut },
     { label: "Zoom Reset", shortcut: "⌘0", action: zoomReset },
     { label: "File Search", shortcut: "⌘⇧F", action: openFileSearch },
+    { label: "Search in Files", shortcut: "⌘⌥F", action: openContentSearch },
     { label: "Cycle Font", action: cycleFont },
     { label: "Reload Custom CSS", action: loadCustomCSS },
     { label: "Check for Updates", action: () => doUpdateCheck(true) },
@@ -1764,6 +1765,246 @@ function handleFileSearchKey(e: KeyboardEvent) {
     e.preventDefault();
     closeFileSearch();
   }
+}
+
+// --- Content search ---
+
+interface SearchResult {
+  file_path: string;
+  line_number: number;
+  line_content: string;
+  match_start: number;
+  match_end: number;
+}
+
+let contentSearchSelectedIndex = 0;
+let contentSearchResults: SearchResult[] = [];
+let contentSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function openContentSearch() {
+  if (!currentFolderPath) {
+    flashStatus("Open a folder first", "var(--warning)");
+    return;
+  }
+  const dialog = document.getElementById("content-search");
+  if (!dialog) return;
+  if (!dialog.classList.contains("hidden")) {
+    dialog.classList.add("hidden");
+    return;
+  }
+  dialog.classList.remove("hidden");
+  const input = document.getElementById("contentsearch-input") as HTMLInputElement;
+  input.value = "";
+  input.focus();
+  contentSearchSelectedIndex = 0;
+  contentSearchResults = [];
+  renderContentSearchResults();
+}
+
+function closeContentSearch() {
+  const dialog = document.getElementById("content-search");
+  if (dialog) dialog.classList.add("hidden");
+  if (contentSearchDebounceTimer) clearTimeout(contentSearchDebounceTimer);
+}
+
+async function doContentSearch(query: string) {
+  if (!query.trim() || !currentFolderPath) {
+    contentSearchResults = [];
+    renderContentSearchResults();
+    return;
+  }
+  try {
+    contentSearchResults = await invoke<SearchResult[]>("search_in_files", {
+      folderPath: currentFolderPath,
+      query: query.trim(),
+    });
+  } catch {
+    contentSearchResults = [];
+  }
+  contentSearchSelectedIndex = 0;
+  renderContentSearchResults();
+}
+
+function renderContentSearchResults() {
+  const container = document.getElementById("contentsearch-results");
+  if (!container) return;
+  if (contentSearchResults.length === 0) {
+    container.innerHTML = "";
+    return;
+  }
+  const prefix = currentFolderPath ? currentFolderPath + "/" : "";
+  container.innerHTML = contentSearchResults.map((r, i) => {
+    const active = i === contentSearchSelectedIndex ? " active" : "";
+    const relPath = r.file_path.startsWith(prefix) ? r.file_path.slice(prefix.length) : r.file_path;
+    const fileName = relPath.split("/").pop()!;
+    const dir = relPath.substring(0, relPath.lastIndexOf("/"));
+    const before = escapeHtml(r.line_content.substring(0, r.match_start));
+    const match = escapeHtml(r.line_content.substring(r.match_start, r.match_end));
+    const after = escapeHtml(r.line_content.substring(r.match_end));
+    const lineHtml = `${before}<span class="cs-match">${match}</span>${after}`;
+    return `<div class="contentsearch-item${active}" data-index="${i}">
+      <span class="cs-file">${escapeHtml(fileName)}</span>${dir ? `<span class="cs-line-num">${escapeHtml(dir)}</span>` : ""}<span class="cs-line-num">:${r.line_number}</span>
+      <span class="cs-content">${lineHtml}</span>
+    </div>`;
+  }).join("");
+  container.querySelectorAll(".contentsearch-item").forEach((el, i) => {
+    el.addEventListener("click", () => openContentSearchResult(i));
+  });
+}
+
+// Navigate editor to exact keyword position and sync preview scroll.
+// Uses double-rAF so all pending rAFs (CodeMirror scroll, restoreScrollPosition)
+// have already fired before we read scrollTop and sync the preview.
+async function navigateToSearchResult(result: SearchResult) {
+  const line = Math.max(1, result.line_number);
+  const lineInfo = editor.state.doc.line(Math.min(line, editor.state.doc.lines));
+  const anchor = Math.min(lineInfo.from + result.match_start, lineInfo.to);
+  const head = Math.min(lineInfo.from + result.match_end, lineInfo.to);
+  editor.dispatch({ selection: { anchor, head }, scrollIntoView: true });
+  editor.focus();
+  // Double-rAF: wait for all pending animation frames (scroll ops) to settle
+  requestAnimationFrame(() => {
+    requestAnimationFrame(async () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+      await updatePreview(editor.state.doc.toString());
+      const previewPane = document.getElementById("preview-pane");
+      const editorScroll = editor.scrollDOM;
+      if (!previewPane || !editorScroll) return;
+      const pct = editorScroll.scrollTop / Math.max(1, editorScroll.scrollHeight - editorScroll.clientHeight);
+      previewPane.scrollTop = pct * Math.max(0, previewPane.scrollHeight - previewPane.clientHeight);
+    });
+  });
+}
+
+async function openContentSearchResult(index: number) {
+  const result = contentSearchResults[index];
+  if (!result) return;
+  closeContentSearch();
+  await openFile(result.file_path, true);
+  navigateToSearchResult(result);
+}
+
+function handleContentSearchKey(e: KeyboardEvent) {
+  const dialog = document.getElementById("content-search");
+  if (!dialog || dialog.classList.contains("hidden")) return;
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    contentSearchSelectedIndex = Math.min(contentSearchSelectedIndex + 1, contentSearchResults.length - 1);
+    renderContentSearchResults();
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    contentSearchSelectedIndex = Math.max(contentSearchSelectedIndex - 1, 0);
+    renderContentSearchResults();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    openContentSearchResult(contentSearchSelectedIndex);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeContentSearch();
+  }
+}
+
+// --- Sidebar search (inline in sidebar) ---
+
+let sidebarSearchMode = false;
+let sidebarSearchDebounce: ReturnType<typeof setTimeout> | null = null;
+let sidebarSearchResults: SearchResult[] = [];
+let sidebarSearchSelectedIndex = 0;
+
+function activateSidebarSearch() {
+  if (!currentFolderPath) {
+    flashStatus("Open a folder first", "var(--warning)");
+    return;
+  }
+  sidebarSearchMode = true;
+  sidebarSearchResults = [];
+  sidebarSearchSelectedIndex = 0;
+
+  // Show search panel, hide tree and outline
+  document.getElementById("sidebar-search-panel")?.classList.remove("hidden");
+  document.getElementById("sidebar-tree")?.classList.add("hidden");
+  document.getElementById("outline-panel")?.classList.add("hidden");
+
+  // Make folder title clickable to exit search
+  const title = document.getElementById("sidebar-title");
+  if (title) title.classList.add("clickable");
+
+  // Clear and focus input
+  const input = document.getElementById("sidebar-search-input") as HTMLInputElement;
+  if (input) { input.value = ""; input.focus(); }
+
+  renderSidebarSearchResults();
+}
+
+function deactivateSidebarSearch() {
+  sidebarSearchMode = false;
+  if (sidebarSearchDebounce) clearTimeout(sidebarSearchDebounce);
+
+  // Hide search panel, show tree
+  document.getElementById("sidebar-search-panel")?.classList.add("hidden");
+  document.getElementById("sidebar-tree")?.classList.remove("hidden");
+
+  // Remove clickable style from title
+  const title = document.getElementById("sidebar-title");
+  if (title) title.classList.remove("clickable");
+}
+
+async function doSidebarSearch(query: string) {
+  if (!query.trim() || !currentFolderPath) {
+    sidebarSearchResults = [];
+    renderSidebarSearchResults();
+    return;
+  }
+  try {
+    sidebarSearchResults = await invoke<SearchResult[]>("search_in_files", {
+      folderPath: currentFolderPath,
+      query: query.trim(),
+    });
+  } catch {
+    sidebarSearchResults = [];
+  }
+  sidebarSearchSelectedIndex = 0;
+  renderSidebarSearchResults();
+}
+
+function renderSidebarSearchResults() {
+  const container = document.getElementById("sidebar-search-results");
+  if (!container) return;
+
+  if (sidebarSearchResults.length === 0) {
+    const input = document.getElementById("sidebar-search-input") as HTMLInputElement;
+    const hasQuery = input?.value.trim();
+    container.innerHTML = hasQuery
+      ? `<div class="sidebar-search-empty">No results</div>`
+      : "";
+    return;
+  }
+
+  const prefix = currentFolderPath ? currentFolderPath + "/" : "";
+  container.innerHTML = sidebarSearchResults.map((r, i) => {
+    const active = i === sidebarSearchSelectedIndex ? " active" : "";
+    const relPath = r.file_path.startsWith(prefix) ? r.file_path.slice(prefix.length) : r.file_path;
+    const fileName = relPath.split("/").pop()!;
+    const dir = relPath.substring(0, relPath.lastIndexOf("/"));
+    const before = escapeHtml(r.line_content.substring(0, r.match_start));
+    const match = escapeHtml(r.line_content.substring(r.match_start, r.match_end));
+    const after = escapeHtml(r.line_content.substring(r.match_end));
+    return `<div class="sidebar-search-item${active}" data-index="${i}">
+      <div><span class="ss-file">${escapeHtml(fileName)}</span>${dir ? `<span class="ss-meta">${escapeHtml(dir)}</span>` : ""}<span class="ss-meta">:${r.line_number}</span></div>
+      <span class="ss-content">${before}<span class="ss-match">${match}</span>${after}</span>
+    </div>`;
+  }).join("");
+
+  container.querySelectorAll(".sidebar-search-item").forEach((el, i) => {
+    el.addEventListener("click", () => openSidebarSearchResult(i));
+  });
+}
+
+async function openSidebarSearchResult(index: number) {
+  const result = sidebarSearchResults[index];
+  if (!result) return;
+  await openFile(result.file_path, true);
+  navigateToSearchResult(result);
 }
 
 // --- Scroll position memory (#9) ---
@@ -2218,6 +2459,7 @@ window.addEventListener("DOMContentLoaded", () => {
           { key: "Mod-Shift-c", run: () => { copyFormattedHTML(); return true; } },
           { key: "Mod-Shift-p", run: () => { toggleCommandPalette(); return true; } },
           { key: "Mod-Shift-f", run: () => { openFileSearch(); return true; } },
+          { key: "Mod-Alt-f", run: () => { sidebarSearchMode ? deactivateSidebarSearch() : activateSidebarSearch(); return true; } },
           { key: "Mod-=", run: () => { zoomIn(); return true; } },
           { key: "Mod--", run: () => { zoomOut(); return true; } },
           { key: "Mod-0", run: () => { zoomReset(); return true; } },
@@ -2333,6 +2575,44 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-sidebar-outline")?.addEventListener("click", () => toggleOutline());
 
+  // Sidebar search button
+  document.getElementById("btn-sidebar-search")?.addEventListener("click", () => {
+    if (sidebarSearchMode) deactivateSidebarSearch();
+    else activateSidebarSearch();
+  });
+
+  // Sidebar search input — debounced
+  document.getElementById("sidebar-search-input")?.addEventListener("input", (e) => {
+    if (sidebarSearchDebounce) clearTimeout(sidebarSearchDebounce);
+    sidebarSearchDebounce = setTimeout(() => {
+      doSidebarSearch((e.target as HTMLInputElement).value);
+    }, 300);
+  });
+
+  // Arrow key nav + Escape in sidebar search
+  document.getElementById("sidebar-search-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      sidebarSearchSelectedIndex = Math.min(sidebarSearchSelectedIndex + 1, sidebarSearchResults.length - 1);
+      renderSidebarSearchResults();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      sidebarSearchSelectedIndex = Math.max(sidebarSearchSelectedIndex - 1, 0);
+      renderSidebarSearchResults();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      openSidebarSearchResult(sidebarSearchSelectedIndex);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      deactivateSidebarSearch();
+    }
+  });
+
+  // Sidebar title click → exit search mode
+  document.getElementById("sidebar-title")?.addEventListener("click", () => {
+    if (sidebarSearchMode) deactivateSidebarSearch();
+  });
+
   // Context menu items
   document.getElementById("ctx-new-file")?.addEventListener("click", ctxNewFile);
   document.getElementById("ctx-new-folder")?.addEventListener("click", ctxNewFolder);
@@ -2358,6 +2638,17 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("filesearch-input")?.addEventListener("keydown", handleFileSearchKey);
   document.getElementById("filesearch-backdrop")?.addEventListener("click", closeFileSearch);
+
+  // Content search
+  document.getElementById("contentsearch-input")?.addEventListener("input", (e) => {
+    if (contentSearchDebounceTimer) clearTimeout(contentSearchDebounceTimer);
+    contentSearchDebounceTimer = setTimeout(() => {
+      doContentSearch((e.target as HTMLInputElement).value);
+    }, 300);
+  });
+  document.getElementById("contentsearch-input")?.addEventListener("keydown", handleContentSearchKey);
+  document.getElementById("contentsearch-backdrop")?.addEventListener("click", closeContentSearch);
+  document.getElementById("btn-content-search")?.addEventListener("click", openContentSearch);
 
   // Divider drag
   initDividerDrag();
