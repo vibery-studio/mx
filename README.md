@@ -65,6 +65,8 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 - **YAML frontmatter** — rendered as styled metadata table
 - **Footnotes** — `[^1]` syntax via markdown-it-footnote
 - **Wikilinks** — `[[page name]]` renders as clickable link to `page-name.md`
+- **Anchor navigation** — links like `[text](#heading)`, `[text](file.md#section)`, and cross-folder `[text](../dir/file.md)` navigate correctly; Unicode/Vietnamese headings supported
+- **Copy heading link** — hover any heading in preview to reveal a ¶ button that copies its `#anchor-id` to clipboard
 
 ### File Management
 - **File sidebar** — browse directories with drag-to-move reordering

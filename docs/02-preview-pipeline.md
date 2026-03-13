@@ -18,6 +18,31 @@ flowchart LR
 
 Configured with `html: true`, `linkify: true`, `typographer: true`. Handles standard markdown, tables, code blocks, blockquotes, lists.
 
+### Heading IDs & Copy-link Button
+
+Two custom renderer rules extend the base instance:
+
+**`heading_open`** — generates a URL-safe `id` on every heading using Unicode-aware slugification:
+- Extracts text from `text` and `code_inline` child tokens
+- Lowercases and strips non-letter/non-digit chars via `/[^\p{L}\p{N}\s-]/gu` (preserves Vietnamese diacritics and other Unicode scripts)
+- Replaces whitespace with `-`
+- Example: `## Danh sách Hyperlink` → `id="danh-sách-hyperlink"`
+
+**`heading_close`** — injects `<button class="heading-copy-link" data-anchor="…">¶</button>` before the closing tag. Hidden by default, revealed on heading hover; click copies `#anchor-id` to clipboard.
+
+### Link Click Navigation
+
+The preview pane has a delegated click handler that intercepts all `<a>` clicks (`e.preventDefault()`) and routes them:
+
+| href pattern | Behavior |
+|---|---|
+| `https?://…` | Opens in system browser via `plugin:opener` |
+| `#fragment` | Calls `scrollPreviewToAnchor(fragment)` — scrolls preview to matching `[id]` or `[name]` element |
+| `file.md` / `../dir/file.md` | Resolves path via `new URL(filePart, "file://…/")` and calls `openFile()` |
+| `file.md#section` | Opens file, flushes debounce, re-renders preview, then scrolls to anchor |
+
+`scrollPreviewToAnchor(fragment)` queries `[id="…"], [name="…"]` — the `name` selector supports explicit `<a name="anchor">` tags inside table cells.
+
 ## 2. KaTeX Math
 
 `renderKaTeX()` processes the HTML string with regex replacement:

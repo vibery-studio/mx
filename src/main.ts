@@ -190,6 +190,31 @@ const $ = (sel: string) => document.querySelector(sel) as HTMLElement;
 
 const md = new MarkdownIt({ html: true, linkify: true, typographer: true, breaks: true }).use(footnote);
 
+// Attach id attributes to headings for anchor navigation.
+// Uses Unicode property escapes (\p{L}\p{N}) to preserve accented/Vietnamese characters.
+md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
+  const contentToken = tokens[idx + 1];
+  const text = contentToken?.children
+    ?.filter((t: any) => t.type === "text" || t.type === "code_inline")
+    .map((t: any) => t.content)
+    .join("") ?? "";
+  // Strip punctuation but keep Unicode letters/numbers (incl. Vietnamese diacritics)
+  const id = text.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, "-");
+  if (id) tokens[idx].attrSet("id", id);
+  return self.renderToken(tokens, idx, options);
+};
+
+// Inject copy-link button inside each heading (visible on hover)
+md.renderer.rules.heading_close = (tokens, idx, _options, _env, _self) => {
+  // heading_open is always 2 positions before heading_close in markdown-it's token stream
+  const openToken = tokens[idx - 2];
+  const id = openToken?.attrGet("id") ?? "";
+  const btn = id
+    ? `<button class="heading-copy-link" data-anchor="${id}" title="Copy link to heading">¶</button>`
+    : "";
+  return `${btn}</${tokens[idx].tag}>\n`;
+};
+
 // --- Wikilinks support ---
 
 md.inline.ruler.push("wikilink", (state, silent) => {
@@ -413,6 +438,15 @@ async function updatePreview(content: string) {
   html = processMermaidBlocks(html);
   previewPane.innerHTML = html;
   await renderMermaidDivs();
+}
+
+// Scroll the preview pane to the element matching the given anchor fragment.
+// Matches on id attribute (headings) or name attribute (<a name="..."> in table cells).
+function scrollPreviewToAnchor(fragment: string) {
+  const previewPane = document.getElementById("preview-pane");
+  if (!previewPane || !fragment) return;
+  const target = previewPane.querySelector(`[id="${CSS.escape(fragment)}"], [name="${fragment}"]`) as HTMLElement | null;
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 // --- Word counting ---
@@ -2695,7 +2729,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Preview pane link clicks — open relative .md files, external links in browser
+  // Preview pane link clicks — same-file anchors, cross-file/folder .md links, external URLs
   $("#preview-pane")?.addEventListener("click", (e) => {
     const anchor = (e.target as HTMLElement).closest("a");
     if (!anchor) return;
@@ -2708,17 +2742,48 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    if (href.startsWith("#")) return;
+    // Split href into file path and anchor fragment
+    const hashIdx = href.indexOf("#");
+    const filePart = hashIdx >= 0 ? href.slice(0, hashIdx) : href;
+    const fragment = hashIdx >= 0 ? href.slice(hashIdx + 1) : "";
+
+    // Same-file anchor navigation (e.g. #heading-name or #table-anchor)
+    if (!filePart) {
+      scrollPreviewToAnchor(fragment);
+      return;
+    }
 
     const textExts = [".md", ".markdown", ".txt", ".yaml", ".yml", ".json", ".toml", ".xml", ".csv", ".log"];
-    const ext = href.includes(".") ? "." + href.split(".").pop()!.toLowerCase() : "";
+    // Extract extension from file part only (not from the fragment)
+    const ext = filePart.includes(".") ? "." + filePart.split(".").pop()!.toLowerCase() : "";
     if (!textExts.includes(ext)) return;
 
     if (currentFilePath) {
       const dir = currentFilePath.substring(0, currentFilePath.lastIndexOf("/"));
-      const resolved = dir + "/" + href;
-      openFile(resolved);
+      // Normalize relative paths (handles ../ and cross-folder navigation)
+      const resolved = new URL(filePart, "file://" + dir + "/").pathname;
+      openFile(resolved).then(async () => {
+        if (fragment) {
+          // Cancel pending debounce and render immediately so the anchor exists in the DOM
+          if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+          await updatePreview(editor.state.doc.toString());
+          scrollPreviewToAnchor(fragment);
+        }
+      });
     }
+  });
+
+  // Copy-link buttons on headings — copies #anchor-id to clipboard
+  $("#preview-pane")?.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest(".heading-copy-link") as HTMLElement | null;
+    if (!btn) return;
+    e.stopPropagation();
+    const anchor = btn.dataset.anchor;
+    if (!anchor) return;
+    navigator.clipboard.writeText("#" + anchor).then(() => {
+      btn.classList.add("copied");
+      setTimeout(() => btn.classList.remove("copied"), 1500);
+    });
   });
 
   // GitHub link

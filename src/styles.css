@@ -422,6 +422,35 @@ body {
   letter-spacing: 0.05em;
 }
 
+/* Copy-link button shown on heading hover */
+#preview-pane h1 .heading-copy-link,
+#preview-pane h2 .heading-copy-link,
+#preview-pane h3 .heading-copy-link,
+#preview-pane h4 .heading-copy-link,
+#preview-pane h5 .heading-copy-link,
+#preview-pane h6 .heading-copy-link {
+  display: inline-block;
+  margin-left: 0.35em;
+  opacity: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.75em;
+  vertical-align: middle;
+  padding: 0 0.15em;
+  line-height: 1;
+  transition: opacity 0.15s, color 0.15s;
+}
+#preview-pane h1:hover .heading-copy-link,
+#preview-pane h2:hover .heading-copy-link,
+#preview-pane h3:hover .heading-copy-link,
+#preview-pane h4:hover .heading-copy-link,
+#preview-pane h5:hover .heading-copy-link,
+#preview-pane h6:hover .heading-copy-link { opacity: 1; }
+#preview-pane .heading-copy-link:hover { color: var(--accent); }
+#preview-pane .heading-copy-link.copied { color: var(--success); opacity: 1; }
+
 #preview-pane p {
   margin-bottom: 1em;
   line-height: 1.7;
