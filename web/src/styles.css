@@ -620,7 +620,59 @@ body {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface);
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+#preview-pane .mermaid:hover {
+  border-color: var(--accent);
+}
+
+/* Mermaid zoom overlay */
+.mermaid-zoom-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #fff;
+  outline: none;
+  overflow: hidden;
+}
+
+.mermaid-zoom-wrapper {
+  cursor: grab;
+}
+
+.mermaid-zoom-wrapper:active {
+  cursor: grabbing;
+}
+
+.mermaid-zoom-wrapper svg {
+  display: block;
+}
+
+.mermaid-zoom-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10000;
+  background: #f5f5f5;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  color: #333;
+  font-size: 18px;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+.mermaid-zoom-close:hover {
+  opacity: 1;
 }
 
 /* ── Recent Panel ── */

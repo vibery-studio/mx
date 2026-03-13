@@ -11,7 +11,6 @@ import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
 import mermaid from "mermaid";
 import panzoom from "panzoom";
-import type { PanZoom } from "panzoom";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { invoke } from "@tauri-apps/api/core";
@@ -158,7 +157,7 @@ function applyTheme() {
     });
   }
 
-  mermaid.initialize({ startOnLoad: false, theme: getEffectiveTheme() === "dark" ? "dark" : "default" });
+  mermaid.initialize({ startOnLoad: false, theme: "default" });
 
   if (editor) {
     mermaidCounter = 0;
@@ -227,10 +226,9 @@ function renderKaTeX(html: string): string {
 
 // --- Mermaid ---
 
-mermaid.initialize({ startOnLoad: false, theme: getEffectiveTheme() === "dark" ? "dark" : "default" });
+mermaid.initialize({ startOnLoad: false, theme: "default" });
 
 let mermaidCounter = 0;
-let mermaidPanZoomInstances: PanZoom[] = [];
 
 function processMermaidBlocks(html: string): string {
   return html.replace(
@@ -244,10 +242,6 @@ function processMermaidBlocks(html: string): string {
 }
 
 async function renderMermaidDivs() {
-  // Dispose old panzoom instances
-  mermaidPanZoomInstances.forEach((pz) => pz.dispose());
-  mermaidPanZoomInstances = [];
-
   const divs = document.querySelectorAll("#preview-pane .mermaid");
   if (divs.length === 0) return;
   try {
@@ -279,27 +273,11 @@ function openMermaidOverlay(source: HTMLElement) {
     newSvg.setAttribute("viewBox", `${bbox.x} ${bbox.y} ${bbox.width} ${bbox.height}`);
   }
 
-  // Also grab any <style> from the original SVG's shadow/parent that mermaid may inject
-  // Mermaid puts styles INSIDE the SVG so outerHTML should have them
-
-  // Inline all computed styles on every element to survive detachment
-  const origEls = svg.querySelectorAll("*");
-  const newEls = newSvg.querySelectorAll("*");
-  const styleProps = ["fill", "stroke", "stroke-width", "opacity", "font-family", "font-size", "font-weight", "color", "background-color", "rx", "ry"];
-  origEls.forEach((origEl, i) => {
-    const newEl = newEls[i] as SVGElement | HTMLElement;
-    if (!newEl || !newEl.style) return;
-    const cs = window.getComputedStyle(origEl);
-    for (const prop of styleProps) {
-      const val = cs.getPropertyValue(prop);
-      if (val) newEl.style.setProperty(prop, val);
-    }
-  });
+  // outerHTML preserves Mermaid's internal <style> block — no need to copy computed styles
+  // since we always use "default" (light) theme which has good contrast
 
   newSvg.removeAttribute("width");
   newSvg.removeAttribute("height");
-  newSvg.style.width = "100%";
-  newSvg.style.height = "100%";
 
   // Create overlay
   const overlay = document.createElement("div");
@@ -465,6 +443,68 @@ function updateCursorPosition(view: EditorView) {
   if (el) el.textContent = `Ln ${line.number}, Col ${col}`;
 }
 
+// --- File watcher (external changes) ---
+
+let fileWatchSuppressed = false; // suppress events right after we save
+
+async function startFileWatch(path: string | null) {
+  try { await invoke("unwatch_file"); } catch { /* ok */ }
+  if (path) {
+    try { await invoke("watch_file", { path }); } catch { /* ok */ }
+  }
+}
+
+function isEditorDirty(): boolean {
+  const indicator = document.getElementById("modified-indicator");
+  return indicator ? !indicator.classList.contains("hidden") : false;
+}
+
+async function reloadCurrentFile() {
+  if (!currentFilePath) return;
+  try {
+    const result = await invoke<{ path: string; content: string }>("read_file", { path: currentFilePath });
+    editor.dispatch({
+      changes: { from: 0, to: editor.state.doc.length, insert: result.content },
+    });
+    setModified(false);
+  } catch { /* file may have been deleted */ }
+}
+
+let fileChangeBanner: HTMLElement | null = null;
+
+function showFileChangedBanner() {
+  if (fileChangeBanner && document.body.contains(fileChangeBanner)) return; // already showing
+
+  fileChangeBanner = document.createElement("div");
+  fileChangeBanner.className = "file-changed-banner";
+  fileChangeBanner.innerHTML = `
+    <span>File changed on disk.</span>
+    <button id="file-changed-reload">Reload</button>
+    <button id="file-changed-dismiss">Keep mine</button>
+  `;
+  document.body.appendChild(fileChangeBanner);
+
+  document.getElementById("file-changed-reload")?.addEventListener("click", () => {
+    reloadCurrentFile();
+    fileChangeBanner?.remove();
+  }, { once: true });
+
+  document.getElementById("file-changed-dismiss")?.addEventListener("click", () => {
+    fileChangeBanner?.remove();
+  }, { once: true });
+}
+
+listen<string>("file-changed", async (event) => {
+  if (fileWatchSuppressed) return;
+  if (event.payload !== currentFilePath) return;
+
+  if (isEditorDirty()) {
+    showFileChangedBanner();
+  } else {
+    await reloadCurrentFile();
+  }
+});
+
 // --- Modified state ---
 
 function setModified(value: boolean) {
@@ -481,6 +521,8 @@ function setFilename(path: string | null) {
   if (path) localStorage.setItem("mx-last-file", path);
   else localStorage.removeItem("mx-last-file");
   updateBreadcrumb();
+  // Start watching the new file for external changes
+  startFileWatch(path);
 }
 
 async function saveFile() {
@@ -502,10 +544,13 @@ async function saveFile() {
     return;
   }
   try {
+    fileWatchSuppressed = true;
     await invoke("save_file", { path: currentFilePath, content });
     setModified(false);
     deleteRecoveryForCurrent();
+    setTimeout(() => { fileWatchSuppressed = false; }, 1000);
   } catch (e) {
+    fileWatchSuppressed = false;
     console.error("Save failed:", e);
   }
 }
@@ -1799,12 +1844,23 @@ async function ctxDuplicate() {
 
 // --- Copy file path (#10) ---
 
-async function ctxCopyPath() {
+async function ctxCopyAbsolutePath() {
   if (!contextMenuTarget) return;
   const target = contextMenuTarget;
   hideContextMenu();
   await navigator.clipboard.writeText(target.path);
-  flashStatus("Path copied!", "var(--success)");
+  flashStatus("Absolute path copied!", "var(--success)");
+}
+
+async function ctxCopyRelativePath() {
+  if (!contextMenuTarget) return;
+  const target = contextMenuTarget;
+  hideContextMenu();
+  const relative = currentFolderPath
+    ? target.path.replace(currentFolderPath + "/", "")
+    : target.path;
+  await navigator.clipboard.writeText(relative);
+  flashStatus("Relative path copied!", "var(--success)");
 }
 
 // --- Reveal in Finder (#20) ---
@@ -2282,7 +2338,8 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("ctx-new-folder")?.addEventListener("click", ctxNewFolder);
   document.getElementById("ctx-rename")?.addEventListener("click", ctxRename);
   document.getElementById("ctx-duplicate")?.addEventListener("click", ctxDuplicate);
-  document.getElementById("ctx-copy-path")?.addEventListener("click", ctxCopyPath);
+  document.getElementById("ctx-copy-absolute")?.addEventListener("click", ctxCopyAbsolutePath);
+  document.getElementById("ctx-copy-relative")?.addEventListener("click", ctxCopyRelativePath);
   document.getElementById("ctx-reveal")?.addEventListener("click", ctxReveal);
   document.getElementById("ctx-delete")?.addEventListener("click", ctxDelete);
 

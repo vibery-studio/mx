@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
 
 static INITIAL_FILE: Mutex<Option<String>> = Mutex::new(None);
+static FILE_WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
 
 #[derive(Serialize, Deserialize)]
 struct FileInfo {
@@ -673,6 +675,48 @@ fn load_custom_css() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let mut watcher_lock = FILE_WATCHER.lock().map_err(|e| e.to_string())?;
+
+    // Create a new watcher
+    let watched_path = PathBuf::from(&path);
+    let watcher = RecommendedWatcher::new(
+        move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                match event.kind {
+                    EventKind::Modify(_) | EventKind::Create(_) => {
+                        // Only emit if the event is for our specific file
+                        if event.paths.iter().any(|p| p == &watched_path) {
+                            let _ = app.emit("file-changed", watched_path.to_string_lossy().to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        },
+        notify::Config::default(),
+    ).map_err(|e| e.to_string())?;
+
+    *watcher_lock = Some(watcher);
+
+    // Watch the file's parent directory (more reliable than watching the file directly)
+    if let Some(parent) = Path::new(&path).parent() {
+        watcher_lock.as_mut().unwrap()
+            .watch(parent, RecursiveMode::NonRecursive)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn unwatch_file() -> Result<(), String> {
+    let mut watcher_lock = FILE_WATCHER.lock().map_err(|e| e.to_string())?;
+    *watcher_lock = None;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -684,7 +728,7 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

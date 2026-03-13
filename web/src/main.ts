@@ -10,6 +10,7 @@ import { search, searchKeymap } from "@codemirror/search";
 import MarkdownIt from "markdown-it";
 import footnote from "markdown-it-footnote";
 import mermaid from "mermaid";
+import panzoom from "panzoom";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 
@@ -154,7 +155,7 @@ function applyTheme() {
     });
   }
 
-  mermaid.initialize({ startOnLoad: false, theme: getEffectiveTheme() === "dark" ? "dark" : "default" });
+  mermaid.initialize({ startOnLoad: false, theme: "default" });
 
   if (editor) {
     mermaidCounter = 0;
@@ -239,6 +240,84 @@ async function renderMermaidDivs() {
   if (divs.length === 0) return;
   try { await mermaid.run({ nodes: divs as unknown as ArrayLike<HTMLElement> }); }
   catch { /* non-fatal */ }
+  divs.forEach((div) => {
+    const el = div as HTMLElement;
+    if (el.dataset.zoomReady) return;
+    el.dataset.zoomReady = "1";
+    el.style.cursor = "pointer";
+    el.addEventListener("click", () => openMermaidOverlay(el));
+  });
+}
+
+function openMermaidOverlay(source: HTMLElement) {
+  const svg = source.querySelector("svg");
+  if (!svg) return;
+
+  const tmpDiv = document.createElement("div");
+  tmpDiv.innerHTML = svg.outerHTML;
+  const newSvg = tmpDiv.querySelector("svg")!;
+
+  if (!newSvg.getAttribute("viewBox")) {
+    const bbox = svg.getBBox();
+    newSvg.setAttribute("viewBox", `${bbox.x} ${bbox.y} ${bbox.width} ${bbox.height}`);
+  }
+
+  newSvg.removeAttribute("width");
+  newSvg.removeAttribute("height");
+
+  const overlay = document.createElement("div");
+  overlay.className = "mermaid-zoom-overlay";
+
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "mermaid-zoom-close";
+  closeBtn.innerHTML = "✕";
+  closeBtn.title = "Close (Esc)";
+  overlay.appendChild(closeBtn);
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "mermaid-zoom-wrapper";
+  wrapper.appendChild(newSvg);
+  overlay.appendChild(wrapper);
+  document.body.appendChild(overlay);
+
+  const vb = newSvg.getAttribute("viewBox")?.split(/\s+/).map(Number);
+  const svgW = vb ? vb[2] : svg.getBBox().width;
+  const svgH = vb ? vb[3] : svg.getBBox().height;
+  wrapper.style.width = svgW + "px";
+  wrapper.style.height = svgH + "px";
+  newSvg.style.width = "100%";
+  newSvg.style.height = "100%";
+
+  const pad = 60;
+  const scaleX = (window.innerWidth - pad * 2) / svgW;
+  const scaleY = (window.innerHeight - pad * 2) / svgH;
+  const fitScale = Math.min(scaleX, scaleY, 1);
+  const cx = (window.innerWidth - svgW * fitScale) / 2;
+  const cy = (window.innerHeight - svgH * fitScale) / 2;
+
+  const pz = panzoom(wrapper, {
+    smoothScroll: true,
+    minZoom: 0.1,
+    maxZoom: 10,
+    pinchSpeed: 1.5,
+    zoomDoubleClickSpeed: 2,
+  });
+
+  pz.zoomAbs(0, 0, fitScale);
+  pz.moveTo(cx, cy);
+
+  function close() {
+    pz.dispose();
+    overlay.remove();
+  }
+
+  closeBtn.addEventListener("click", close);
+  const escHandler = (ev: KeyboardEvent) => {
+    if (ev.key === "Escape") { close(); document.removeEventListener("keydown", escHandler); }
+  };
+  document.addEventListener("keydown", escHandler);
+  overlay.tabIndex = 0;
+  overlay.focus();
 }
 
 // --- YAML Frontmatter ---

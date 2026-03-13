@@ -59,7 +59,7 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 - **Selection count** — word/character count for selected text in status bar
 
 ### Markdown
-- **Mermaid diagrams** — rendered inline, dark/light theme
+- **Mermaid diagrams** — rendered inline with click-to-zoom fullscreen overlay (pan & pinch zoom)
 - **KaTeX math** — inline `$...$` and display `$$...$$`
 - **YAML frontmatter** — rendered as styled metadata table
 - **Footnotes** — `[^1]` syntax via markdown-it-footnote
@@ -67,7 +67,7 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 
 ### File Management
 - **File sidebar** — browse directories with drag-to-move reordering
-- **Context menu** — new file, new folder, rename, duplicate, copy path, reveal in Finder, delete
+- **Context menu** — new file, new folder, rename, duplicate, copy path (absolute/relative), reveal in Finder, delete
 - **File search** — Cmd+Shift+F fuzzy search across folder
 - **Command palette** — Cmd+Shift+P for quick actions
 - **Breadcrumb navigation** — clickable path segments
@@ -78,6 +78,7 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 ### Writing
 - **Auto-save** — configurable, saves after 3s of inactivity
 - **Crash recovery** — periodic recovery snapshots for unsaved work
+- **External change detection** — auto-reloads when file changes on disk, prompts if you have unsaved edits
 - **Zen mode** — Cmd+Shift+Z, hides all chrome for distraction-free writing
 - **Image paste** — paste images from clipboard directly into editor
 - **Image lightbox** — click images in preview to zoom fullscreen

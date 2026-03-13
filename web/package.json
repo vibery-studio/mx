@@ -22,7 +22,8 @@
     "katex": "^0.16.38",
     "markdown-it": "^14.1.0",
     "markdown-it-footnote": "^4.0.0",
-    "mermaid": "^11.13.0"
+    "mermaid": "^11.13.0",
+    "panzoom": "^9.4.3"
   },
   "devDependencies": {
     "@types/katex": "^0.16.7",
