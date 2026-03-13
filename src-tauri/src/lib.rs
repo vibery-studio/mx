@@ -7,6 +7,7 @@ use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
 
 static INITIAL_FILE: Mutex<Option<String>> = Mutex::new(None);
 static FILE_WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
+static FOLDER_WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
 
 #[derive(Serialize, Deserialize)]
 struct FileInfo {
@@ -211,13 +212,16 @@ fn search_in_files(folder_path: String, query: String) -> Result<Vec<SearchResul
         for (i, line) in content.lines().enumerate() {
             if results.len() >= max_results { break; }
             let line_lower = line.to_lowercase();
-            if let Some(pos) = line_lower.find(&query_lower) {
+            if let Some(byte_pos) = line_lower.find(&query_lower) {
+                // Convert byte offsets to char offsets for JavaScript compatibility
+                let char_start = line_lower[..byte_pos].chars().count();
+                let char_end = char_start + query_lower.chars().count();
                 results.push(SearchResult {
                     file_path: path_str.clone(),
                     line_number: i + 1,
                     line_content: line.to_string(),
-                    match_start: pos,
-                    match_end: pos + query.len(),
+                    match_start: char_start,
+                    match_end: char_end,
                 });
             }
         }
@@ -783,6 +787,40 @@ fn unwatch_file() -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn watch_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
+    let mut watcher_lock = FOLDER_WATCHER.lock().map_err(|e| e.to_string())?;
+
+    let watcher = RecommendedWatcher::new(
+        move |res: Result<Event, notify::Error>| {
+            if let Ok(event) = res {
+                match event.kind {
+                    EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+                        let _ = app.emit("folder-changed", ());
+                    }
+                    _ => {}
+                }
+            }
+        },
+        notify::Config::default(),
+    ).map_err(|e| e.to_string())?;
+
+    *watcher_lock = Some(watcher);
+
+    watcher_lock.as_mut().unwrap()
+        .watch(Path::new(&path), RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn unwatch_folder() -> Result<(), String> {
+    let mut watcher_lock = FOLDER_WATCHER.lock().map_err(|e| e.to_string())?;
+    *watcher_lock = None;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -794,7 +832,7 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, search_in_files])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

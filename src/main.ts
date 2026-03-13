@@ -209,8 +209,9 @@ md.renderer.rules.heading_close = (tokens, idx, _options, _env, _self) => {
   // heading_open is always 2 positions before heading_close in markdown-it's token stream
   const openToken = tokens[idx - 2];
   const id = openToken?.attrGet("id") ?? "";
+  const safeId = id.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const btn = id
-    ? `<button class="heading-copy-link" data-anchor="${id}" title="Copy link to heading">¶</button>`
+    ? `<button class="heading-copy-link" data-anchor="${safeId}" title="Copy link to heading">¶</button>`
     : "";
   return `${btn}</${tokens[idx].tag}>\n`;
 };
@@ -445,7 +446,7 @@ async function updatePreview(content: string) {
 function scrollPreviewToAnchor(fragment: string) {
   const previewPane = document.getElementById("preview-pane");
   if (!previewPane || !fragment) return;
-  const target = previewPane.querySelector(`[id="${CSS.escape(fragment)}"], [name="${fragment}"]`) as HTMLElement | null;
+  const target = previewPane.querySelector(`[id="${CSS.escape(fragment)}"], [name="${CSS.escape(fragment)}"]`) as HTMLElement | null;
   if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -537,6 +538,24 @@ listen<string>("file-changed", async (event) => {
   } else {
     await reloadCurrentFile();
   }
+});
+
+// Folder watcher: refresh sidebar when files are added/removed/renamed externally
+let folderWatchDebounce: ReturnType<typeof setTimeout> | null = null;
+
+async function startFolderWatch(path: string | null) {
+  try { await invoke("unwatch_folder"); } catch { /* ok */ }
+  if (path) {
+    try { await invoke("watch_folder", { path }); } catch { /* ok */ }
+  }
+}
+
+listen("folder-changed", () => {
+  // Debounce to avoid rapid-fire refreshes
+  if (folderWatchDebounce) clearTimeout(folderWatchDebounce);
+  folderWatchDebounce = setTimeout(() => {
+    if (currentFolderPath) refreshSidebar();
+  }, 500);
 });
 
 // --- Modified state ---
@@ -925,7 +944,7 @@ function initSidebarResize() {
 // --- View modes: "split" | "editor" | "preview" ---
 
 type ViewMode = "split" | "editor" | "preview";
-let currentViewMode: ViewMode = "split";
+let currentViewMode: ViewMode = (localStorage.getItem("mx-view-mode") as ViewMode) || "split";
 
 function setViewMode(mode: ViewMode) {
   const previewPane = $("#preview-pane");
@@ -934,6 +953,7 @@ function setViewMode(mode: ViewMode) {
   if (!previewPane || !divider || !editorPane) return;
 
   currentViewMode = mode;
+  localStorage.setItem("mx-view-mode", mode);
 
   if (mode === "split") {
     editorPane.style.display = "";
@@ -1365,7 +1385,9 @@ function updateSidebarTitle(path: string) {
 
 function toggleSidebar() {
   const sidebar = document.getElementById("sidebar");
-  if (sidebar) sidebar.classList.toggle("hidden");
+  if (!sidebar) return;
+  sidebar.classList.toggle("hidden");
+  localStorage.setItem("mx-sidebar", sidebar.classList.contains("hidden") ? "false" : "true");
 }
 
 async function openFolder(folderPath?: string) {
@@ -1384,6 +1406,7 @@ async function openFolder(folderPath?: string) {
   }
   loadDirectory(path);
   updateSidebarTitle(path);
+  startFolderWatch(path);
 }
 
 function refreshSidebar() {
@@ -1548,6 +1571,7 @@ function toggleOutline() {
   if (!panel) return;
   outlineVisible = !outlineVisible;
   panel.classList.toggle("hidden", !outlineVisible);
+  localStorage.setItem("mx-outline", outlineVisible ? "true" : "false");
   if (outlineVisible) updateOutline(editor.state.doc.toString());
 }
 
@@ -1619,10 +1643,11 @@ function getCommands(): PaletteCommand[] {
     { label: "Zoom Out", shortcut: "⌘-", action: zoomOut },
     { label: "Zoom Reset", shortcut: "⌘0", action: zoomReset },
     { label: "File Search", shortcut: "⌘⇧F", action: openFileSearch },
-    { label: "Search in Files", shortcut: "⌘⌥F", action: openContentSearch },
+    { label: "Search in Files", shortcut: "⌘⌥F", action: () => { sidebarSearchMode ? deactivateSidebarSearch() : activateSidebarSearch(); } },
     { label: "Cycle Font", action: cycleFont },
     { label: "Reload Custom CSS", action: loadCustomCSS },
     { label: "Check for Updates", action: () => doUpdateCheck(true) },
+    { label: "Keyboard Shortcuts", shortcut: "⌘/", action: toggleHelp },
     { label: "About mx", action: () => invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" }) },
   ];
 }
@@ -1801,7 +1826,7 @@ function handleFileSearchKey(e: KeyboardEvent) {
   }
 }
 
-// --- Content search ---
+// --- Content search (sidebar) ---
 
 interface SearchResult {
   file_path: string;
@@ -1809,81 +1834,6 @@ interface SearchResult {
   line_content: string;
   match_start: number;
   match_end: number;
-}
-
-let contentSearchSelectedIndex = 0;
-let contentSearchResults: SearchResult[] = [];
-let contentSearchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-async function openContentSearch() {
-  if (!currentFolderPath) {
-    flashStatus("Open a folder first", "var(--warning)");
-    return;
-  }
-  const dialog = document.getElementById("content-search");
-  if (!dialog) return;
-  if (!dialog.classList.contains("hidden")) {
-    dialog.classList.add("hidden");
-    return;
-  }
-  dialog.classList.remove("hidden");
-  const input = document.getElementById("contentsearch-input") as HTMLInputElement;
-  input.value = "";
-  input.focus();
-  contentSearchSelectedIndex = 0;
-  contentSearchResults = [];
-  renderContentSearchResults();
-}
-
-function closeContentSearch() {
-  const dialog = document.getElementById("content-search");
-  if (dialog) dialog.classList.add("hidden");
-  if (contentSearchDebounceTimer) clearTimeout(contentSearchDebounceTimer);
-}
-
-async function doContentSearch(query: string) {
-  if (!query.trim() || !currentFolderPath) {
-    contentSearchResults = [];
-    renderContentSearchResults();
-    return;
-  }
-  try {
-    contentSearchResults = await invoke<SearchResult[]>("search_in_files", {
-      folderPath: currentFolderPath,
-      query: query.trim(),
-    });
-  } catch {
-    contentSearchResults = [];
-  }
-  contentSearchSelectedIndex = 0;
-  renderContentSearchResults();
-}
-
-function renderContentSearchResults() {
-  const container = document.getElementById("contentsearch-results");
-  if (!container) return;
-  if (contentSearchResults.length === 0) {
-    container.innerHTML = "";
-    return;
-  }
-  const prefix = currentFolderPath ? currentFolderPath + "/" : "";
-  container.innerHTML = contentSearchResults.map((r, i) => {
-    const active = i === contentSearchSelectedIndex ? " active" : "";
-    const relPath = r.file_path.startsWith(prefix) ? r.file_path.slice(prefix.length) : r.file_path;
-    const fileName = relPath.split("/").pop()!;
-    const dir = relPath.substring(0, relPath.lastIndexOf("/"));
-    const before = escapeHtml(r.line_content.substring(0, r.match_start));
-    const match = escapeHtml(r.line_content.substring(r.match_start, r.match_end));
-    const after = escapeHtml(r.line_content.substring(r.match_end));
-    const lineHtml = `${before}<span class="cs-match">${match}</span>${after}`;
-    return `<div class="contentsearch-item${active}" data-index="${i}">
-      <span class="cs-file">${escapeHtml(fileName)}</span>${dir ? `<span class="cs-line-num">${escapeHtml(dir)}</span>` : ""}<span class="cs-line-num">:${r.line_number}</span>
-      <span class="cs-content">${lineHtml}</span>
-    </div>`;
-  }).join("");
-  container.querySelectorAll(".contentsearch-item").forEach((el, i) => {
-    el.addEventListener("click", () => openContentSearchResult(i));
-  });
 }
 
 // Navigate editor to exact keyword position and sync preview scroll.
@@ -1909,36 +1859,6 @@ async function navigateToSearchResult(result: SearchResult) {
     });
   });
 }
-
-async function openContentSearchResult(index: number) {
-  const result = contentSearchResults[index];
-  if (!result) return;
-  closeContentSearch();
-  await openFile(result.file_path, true);
-  navigateToSearchResult(result);
-}
-
-function handleContentSearchKey(e: KeyboardEvent) {
-  const dialog = document.getElementById("content-search");
-  if (!dialog || dialog.classList.contains("hidden")) return;
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    contentSearchSelectedIndex = Math.min(contentSearchSelectedIndex + 1, contentSearchResults.length - 1);
-    renderContentSearchResults();
-  } else if (e.key === "ArrowUp") {
-    e.preventDefault();
-    contentSearchSelectedIndex = Math.max(contentSearchSelectedIndex - 1, 0);
-    renderContentSearchResults();
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    openContentSearchResult(contentSearchSelectedIndex);
-  } else if (e.key === "Escape") {
-    e.preventDefault();
-    closeContentSearch();
-  }
-}
-
-// --- Sidebar search (inline in sidebar) ---
 
 let sidebarSearchMode = false;
 let sidebarSearchDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -2084,6 +2004,57 @@ function toggleZenMode() {
   zenMode = !zenMode;
   const app = document.getElementById("app");
   if (app) app.classList.toggle("zen-mode", zenMode);
+  localStorage.setItem("mx-zen", zenMode ? "true" : "false");
+}
+
+// --- Help cheatsheet modal ---
+
+function toggleHelp() {
+  const modal = document.getElementById("help-modal");
+  if (!modal) return;
+  if (!modal.classList.contains("hidden")) {
+    modal.classList.add("hidden");
+    return;
+  }
+  const content = document.getElementById("help-content");
+  if (content) {
+    const shortcuts = [
+      ["File", [
+        ["⌘N", "New file"],
+        ["⌘O", "Open file"],
+        ["⌘S", "Save"],
+        ["⌘⇧S", "Save as"],
+      ]],
+      ["View", [
+        ["⌘P", "Toggle preview"],
+        ["⌘E", "Read mode"],
+        ["⌘B", "Toggle sidebar"],
+        ["⌘⇧Z", "Zen mode"],
+        ["⌘+/⌘-/⌘0", "Zoom in/out/reset"],
+      ]],
+      ["Search", [
+        ["⌘F", "Find in file"],
+        ["⌘H", "Find & replace"],
+        ["⌘⇧F", "File search"],
+        ["⌘⌥F", "Content search"],
+        ["⌘⇧P", "Command palette"],
+      ]],
+      ["Edit", [
+        ["⌘Z/⌘⇧Z", "Undo/redo"],
+        ["⌘⇧C", "Copy formatted HTML"],
+        ["Tab/⇧Tab", "Indent/outdent"],
+      ]],
+      ["Export", [
+        ["⌘⇧E", "Export PDF"],
+      ]],
+    ] as [string, [string, string][]][];
+    content.innerHTML = shortcuts.map(([group, keys]) =>
+      `<div class="help-group"><h3>${group}</h3>${keys.map(([k, d]) =>
+        `<div class="help-row"><kbd>${k}</kbd><span>${d}</span></div>`
+      ).join("")}</div>`
+    ).join("");
+  }
+  modal.classList.remove("hidden");
 }
 
 // --- Copy modes (#4) ---
@@ -2497,6 +2468,7 @@ window.addEventListener("DOMContentLoaded", () => {
           { key: "Mod-=", run: () => { zoomIn(); return true; } },
           { key: "Mod--", run: () => { zoomOut(); return true; } },
           { key: "Mod-0", run: () => { zoomReset(); return true; } },
+          { key: "Mod-/", run: () => { toggleHelp(); return true; } },
         ]),
         EditorView.updateListener.of((update: ViewUpdate) => {
           if (update.docChanged || update.selectionSet) {
@@ -2562,6 +2534,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-theme")?.addEventListener("click", () => cycleTheme());
 
   // Help menu items
+  document.getElementById("btn-keyboard-shortcuts")?.addEventListener("click", toggleHelp);
   document.getElementById("btn-check-updates")?.addEventListener("click", () => doUpdateCheck(true));
   document.getElementById("btn-about")?.addEventListener("click", () => {
     invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" });
@@ -2608,6 +2581,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }).catch(e => flashStatus(`Error: ${e}`, "var(--error)", 3000));
   });
   document.getElementById("btn-sidebar-outline")?.addEventListener("click", () => toggleOutline());
+  document.getElementById("btn-sidebar-close")?.addEventListener("click", () => toggleSidebar());
 
   // Sidebar search button
   document.getElementById("btn-sidebar-search")?.addEventListener("click", () => {
@@ -2673,16 +2647,10 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("filesearch-input")?.addEventListener("keydown", handleFileSearchKey);
   document.getElementById("filesearch-backdrop")?.addEventListener("click", closeFileSearch);
 
-  // Content search
-  document.getElementById("contentsearch-input")?.addEventListener("input", (e) => {
-    if (contentSearchDebounceTimer) clearTimeout(contentSearchDebounceTimer);
-    contentSearchDebounceTimer = setTimeout(() => {
-      doContentSearch((e.target as HTMLInputElement).value);
-    }, 300);
-  });
-  document.getElementById("contentsearch-input")?.addEventListener("keydown", handleContentSearchKey);
-  document.getElementById("contentsearch-backdrop")?.addEventListener("click", closeContentSearch);
-  document.getElementById("btn-content-search")?.addEventListener("click", openContentSearch);
+  // Help modal
+  document.getElementById("status-help")?.addEventListener("click", toggleHelp);
+  document.getElementById("help-close")?.addEventListener("click", toggleHelp);
+  document.getElementById("help-backdrop")?.addEventListener("click", toggleHelp);
 
   // Divider drag
   initDividerDrag();
@@ -2809,12 +2777,24 @@ window.addEventListener("DOMContentLoaded", () => {
   // Restore last folder in sidebar
   if (currentFolderPath) {
     const sidebar = document.getElementById("sidebar");
-    if (sidebar) {
+    const sidebarSaved = localStorage.getItem("mx-sidebar");
+    // Show sidebar unless user explicitly closed it
+    if (sidebar && sidebarSaved !== "false") {
       sidebar.classList.remove("hidden");
-      loadDirectory(currentFolderPath);
-      updateSidebarTitle(currentFolderPath);
     }
+    loadDirectory(currentFolderPath);
+    updateSidebarTitle(currentFolderPath);
+    startFolderWatch(currentFolderPath);
   }
+
+  // Restore view mode
+  if (currentViewMode !== "split") setViewMode(currentViewMode);
+
+  // Restore outline
+  if (localStorage.getItem("mx-outline") === "true") toggleOutline();
+
+  // Restore zen mode
+  if (localStorage.getItem("mx-zen") === "true") toggleZenMode();
 
   // Start recovery timer
   scheduleRecovery();

@@ -43,7 +43,6 @@
               <div id="btn-toggle-outline" class="dropdown-item">Toggle Outline</div>
               <div id="btn-toggle-linenumbers" class="dropdown-item">Line Numbers: <span id="linenumbers-label">On</span></div>
               <div id="btn-zen-mode" class="dropdown-item">Zen Mode</div>
-              <div id="btn-content-search" class="dropdown-item">Search in Files <span class="shortcut">⌘⌥F</span></div>
               <div class="dropdown-divider"></div>
               <div id="btn-font-menu" class="dropdown-item">Font: <span id="font-label">System</span></div>
               <div id="btn-theme" class="dropdown-item"><span id="btn-theme-label">Theme: System</span></div>
@@ -52,6 +51,8 @@
           <div class="toolbar-dropdown">
             <button id="btn-help-menu">Help <span class="arrow">▾</span></button>
             <div class="dropdown-menu hidden">
+              <div id="btn-keyboard-shortcuts" class="dropdown-item">Keyboard Shortcuts <span class="shortcut">⌘/</span></div>
+              <div class="dropdown-divider"></div>
               <div id="btn-check-updates" class="dropdown-item">Check for Updates…</div>
               <div id="btn-about" class="dropdown-item">About mx</div>
             </div>
@@ -109,6 +110,7 @@
               <button id="btn-sidebar-new-file" title="New File">+</button>
               <button id="btn-sidebar-new-folder" title="New Folder">📁</button>
               <button id="btn-sidebar-outline" title="Toggle Outline">¶</button>
+              <button id="btn-sidebar-close" title="Close Sidebar (⌘B)">✕</button>
             </div>
           </div>
           <div id="sidebar-search-panel" class="hidden">
@@ -161,20 +163,24 @@
           <div id="filesearch-results"></div>
         </div>
       </div>
-      <!-- Content search -->
-      <div id="content-search" class="hidden">
-        <div id="contentsearch-backdrop"></div>
-        <div id="contentsearch-dialog">
-          <input id="contentsearch-input" type="text" placeholder="Search in files…" autocomplete="off" />
-          <div id="contentsearch-results"></div>
-        </div>
-      </div>
       <div id="statusbar">
         <span id="status-position">Ln 1, Col 1</span>
         <span id="status-selection"></span>
         <span id="status-words">0 words</span>
         <span id="status-tokens">0 chars</span>
+        <button id="status-help" title="Keyboard Shortcuts (⌘/)">?</button>
         <a id="status-github" href="https://github.com/vibery-studio/mx" target="_blank">GitHub</a>
+      </div>
+      <!-- Help cheatsheet -->
+      <div id="help-modal" class="hidden">
+        <div id="help-backdrop"></div>
+        <div id="help-dialog">
+          <div id="help-header">
+            <span>Keyboard Shortcuts</span>
+            <button id="help-close">✕</button>
+          </div>
+          <div id="help-content"></div>
+        </div>
       </div>
       <!-- Image lightbox -->
       <div id="image-lightbox" class="hidden"></div>
