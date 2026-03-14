@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
+use wait_timeout::ChildExt;
 
 static INITIAL_FILE: Mutex<Option<String>> = Mutex::new(None);
 static FILE_WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
@@ -361,7 +362,7 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
                 let url = format!("https://mermaid.ink/img/{}?type=png&bgColor=white", encoded);
 
                 let download = Command::new("curl")
-                    .args(["-sL", "-o", png_file.to_str().unwrap(), &url])
+                    .args(["-sL", "--max-time", "15", "-o", png_file.to_str().unwrap(), &url])
                     .env("PATH", path_env)
                     .output();
 
@@ -420,18 +421,36 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
             args.extend_from_slice(&["-V", "mainfont:Helvetica", "-V", "monofont:Menlo"]);
         }
 
-        let result = Command::new("pandoc")
+        let mut child = Command::new("pandoc")
             .args(&args)
             .env("PATH", path_env)
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
             .map_err(|e| format!("Failed to run pandoc: {}", e))?;
 
-        if result.status.success() {
-            // Clean up
-            let _ = fs::remove_dir_all(&tmp_dir);
-            return Ok(output_path);
+        let timeout = std::time::Duration::from_secs(60);
+        match child.wait_timeout(timeout) {
+            Ok(Some(status)) if status.success() => {
+                let _ = fs::remove_dir_all(&tmp_dir);
+                return Ok(output_path);
+            }
+            Ok(Some(_)) => {
+                let stderr = child.stderr.take().map(|mut s| {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
+                    buf
+                }).unwrap_or_default();
+                last_err = stderr;
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                last_err = format!("pandoc timed out after {}s with engine {}", timeout.as_secs(), engine);
+            }
+            Err(e) => {
+                last_err = format!("pandoc error: {}", e);
+            }
         }
-        last_err = String::from_utf8_lossy(&result.stderr).to_string();
     }
 
     let _ = fs::remove_dir_all(&tmp_dir);
