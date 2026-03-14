@@ -151,7 +151,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Extract release notes for this version from CHANGELOG.md
+          NOTES=$(awk "/^## ${VERSION}/{found=1; next} /^## [0-9]/{if(found) exit} found{print}" CHANGELOG.md 2>/dev/null | sed '/^$/N;/^\n$/d')
+          if [ -z "$NOTES" ]; then
+            NOTES="Download the installer for your platform below."
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --title "mx v${VERSION}" \
-            --notes "Download the installer for your platform below." \
+            --notes "$NOTES" \
             release-files/*

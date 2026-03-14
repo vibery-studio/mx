@@ -544,9 +544,9 @@ listen<string>("file-changed", async (event) => {
 let folderWatchDebounce: ReturnType<typeof setTimeout> | null = null;
 
 async function startFolderWatch(path: string | null) {
-  try { await invoke("unwatch_folder"); } catch { /* ok */ }
+  try { await invoke("unwatch_folder"); } catch (e) { console.warn("unwatch_folder failed:", e); }
   if (path) {
-    try { await invoke("watch_folder", { path }); } catch { /* ok */ }
+    try { await invoke("watch_folder", { path }); } catch (e) { console.warn("watch_folder failed:", e); }
   }
 }
 
@@ -2580,6 +2580,7 @@ window.addEventListener("DOMContentLoaded", () => {
       refreshSidebar();
     }).catch(e => flashStatus(`Error: ${e}`, "var(--error)", 3000));
   });
+  document.getElementById("btn-sidebar-refresh")?.addEventListener("click", () => refreshSidebar());
   document.getElementById("btn-sidebar-outline")?.addEventListener("click", () => toggleOutline());
   document.getElementById("btn-sidebar-close")?.addEventListener("click", () => toggleSidebar());
 

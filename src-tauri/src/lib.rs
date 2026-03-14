@@ -747,27 +747,31 @@ fn load_custom_css() -> Result<String, String> {
 
 #[tauri::command]
 fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let mut watcher_lock = FILE_WATCHER.lock().map_err(|e| e.to_string())?;
+    let mut watcher_lock = FILE_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
 
     // Create a new watcher
     let watched_path = PathBuf::from(&path);
     let watcher = RecommendedWatcher::new(
         move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                match event.kind {
+            match res {
+                Ok(event) => match event.kind {
                     EventKind::Modify(_) | EventKind::Create(_) => {
-                        // Only emit if the event is for our specific file
                         if event.paths.iter().any(|p| p == &watched_path) {
                             let _ = app.emit("file-changed", watched_path.to_string_lossy().to_string());
                         }
                     }
                     _ => {}
-                }
+                },
+                Err(e) => eprintln!("[mx] file watcher error: {}", e),
             }
         },
         notify::Config::default(),
     ).map_err(|e| e.to_string())?;
 
+    // Drop old watcher safely (KqueueWatcher::drop can panic)
+    if let Some(old) = watcher_lock.take() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(old)));
+    }
     *watcher_lock = Some(watcher);
 
     // Watch the file's parent directory (more reliable than watching the file directly)
@@ -782,29 +786,35 @@ fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn unwatch_file() -> Result<(), String> {
-    let mut watcher_lock = FILE_WATCHER.lock().map_err(|e| e.to_string())?;
-    *watcher_lock = None;
+    let mut watcher_lock = FILE_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(watcher) = watcher_lock.take() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(watcher)));
+    }
     Ok(())
 }
 
 #[tauri::command]
 fn watch_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let mut watcher_lock = FOLDER_WATCHER.lock().map_err(|e| e.to_string())?;
+    let mut watcher_lock = FOLDER_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
 
     let watcher = RecommendedWatcher::new(
         move |res: Result<Event, notify::Error>| {
-            if let Ok(event) = res {
-                match event.kind {
+            match res {
+                Ok(event) => match event.kind {
                     EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
                         let _ = app.emit("folder-changed", ());
                     }
                     _ => {}
-                }
+                },
+                Err(e) => eprintln!("[mx] folder watcher error: {}", e),
             }
         },
         notify::Config::default(),
     ).map_err(|e| e.to_string())?;
 
+    if let Some(old) = watcher_lock.take() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(old)));
+    }
     *watcher_lock = Some(watcher);
 
     watcher_lock.as_mut().unwrap()
@@ -816,8 +826,11 @@ fn watch_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn unwatch_folder() -> Result<(), String> {
-    let mut watcher_lock = FOLDER_WATCHER.lock().map_err(|e| e.to_string())?;
-    *watcher_lock = None;
+    let mut watcher_lock = FOLDER_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(watcher) = watcher_lock.take() {
+        // KqueueWatcher::drop can panic if the event loop thread already exited
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(watcher)));
+    }
     Ok(())
 }
 

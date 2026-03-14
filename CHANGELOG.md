@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.6
+
+- Fix crash caused by KqueueWatcher drop panic when unwatching folders
+- Add sidebar refresh button for manual file list reload
+- Log watcher errors instead of silently swallowing them
+- Recover from poisoned mutex after watcher panics
+
+## 0.9.5
+
+- Persist UI state across sessions (sidebar width, view mode, zoom level)
+- Help cheatsheet overlay
+- Remove max-width on preview pane to allow free resize via divider
+- Fix preview link navigation
+- Document heading anchor IDs and copy-link button
+
 ## 0.9.4
 
 - Mermaid diagram zoom: click any diagram to open fullscreen overlay with pan & pinch zoom (panzoom library)
