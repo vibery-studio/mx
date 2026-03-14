@@ -369,8 +369,6 @@ body {
   letter-spacing: -0.003em;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
-  max-width: 720px;
-  margin: 0 auto;
   padding: 32px 48px;
 }
 
