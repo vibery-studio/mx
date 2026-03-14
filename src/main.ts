@@ -1143,16 +1143,26 @@ async function exportPDF() {
 
   const statusWords = document.getElementById("status-words");
   const prevText = statusWords?.textContent || "";
+
+  // Listen for progress updates from backend
+  const unlisten = await listen<string>("pdf-progress", (event) => {
+    if (statusWords) {
+      statusWords.textContent = event.payload;
+      statusWords.style.color = "var(--accent)";
+    }
+  });
+
   if (statusWords) {
     statusWords.textContent = "Exporting PDF...";
     statusWords.style.color = "var(--accent)";
   }
 
-  try {
-    const result = await invoke<string>("export_pdf", {
-      markdownContent: content,
-      outputPath,
-    });
+  // Run in background — don't await inline, use .then/.catch
+  invoke<string>("export_pdf", {
+    markdownContent: content,
+    outputPath,
+  }).then((result) => {
+    unlisten();
     if (statusWords) {
       statusWords.textContent = `PDF saved: ${result.split("/").pop()}`;
       statusWords.style.color = "var(--success)";
@@ -1161,8 +1171,9 @@ async function exportPDF() {
         statusWords.style.color = "";
       }, 3000);
     }
-  } catch (e) {
-    console.error("Pandoc export failed:", e);
+  }).catch((e) => {
+    unlisten();
+    console.error("PDF export failed:", e);
     if (statusWords) {
       statusWords.textContent = `PDF failed: ${e}`;
       statusWords.style.color = "var(--error)";
@@ -1171,7 +1182,7 @@ async function exportPDF() {
         statusWords.style.color = "";
       }, 5000);
     }
-  }
+  });
 }
 
 // --- Sidebar / File tree ---

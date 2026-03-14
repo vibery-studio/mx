@@ -325,22 +325,29 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 #[tauri::command]
-fn export_pdf(markdown_content: String, output_path: String) -> Result<String, String> {
+async fn export_pdf(markdown_content: String, output_path: String, app: tauri::AppHandle) -> Result<String, String> {
     use std::process::Command;
     use std::io::Write;
+
+    let _ = app.emit("pdf-progress", "Preparing markdown…");
 
     let tmp_dir = std::env::temp_dir().join("mx_export");
     let _ = fs::create_dir_all(&tmp_dir);
     let tmp_md = tmp_dir.join("export.md");
     let path_env = "/Library/TeX/texbin:/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin";
 
-    // Step 1: Extract mermaid blocks, render to PNG via mermaid.ink API, replace in markdown
+    // Step 1: Extract mermaid blocks, render to PNG via mermaid.ink API
     let mut processed = String::new();
     let mut mermaid_idx = 0u32;
     let mut in_mermaid = false;
     let mut mermaid_buf = String::new();
     let mut in_code = false;
     let mut code_lang = String::new();
+
+    // Count mermaid blocks for progress
+    let mermaid_total = markdown_content.lines()
+        .filter(|l| l.trim() == "```mermaid")
+        .count();
 
     for line in markdown_content.lines() {
         if line.starts_with("```") && !in_code {
@@ -356,13 +363,14 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
         } else if line.starts_with("```") && in_code {
             in_code = false;
             if in_mermaid {
-                // Download PNG from mermaid.ink
+                let _ = app.emit("pdf-progress", format!("Rendering diagram {}/{}…", mermaid_idx + 1, mermaid_total));
+
                 let png_file = tmp_dir.join(format!("diagram_{}.png", mermaid_idx));
                 let encoded = base64_encode(mermaid_buf.trim().as_bytes());
                 let url = format!("https://mermaid.ink/img/{}?type=png&bgColor=white", encoded);
 
                 let download = Command::new("curl")
-                    .args(["-sL", "--max-time", "15", "-o", png_file.to_str().unwrap(), &url])
+                    .args(["-sL", "--max-time", "30", "-o", png_file.to_str().unwrap(), &url])
                     .env("PATH", path_env)
                     .output();
 
@@ -403,11 +411,13 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
     let mut f = fs::File::create(&tmp_md).map_err(|e| e.to_string())?;
     f.write_all(processed.as_bytes()).map_err(|e| e.to_string())?;
 
-    // Step 3: Run pandoc
+    // Step 3: Run pandoc — prefer xelatex for full Unicode/Vietnamese support
     let engines = ["xelatex", "pdflatex"];
     let mut last_err = String::new();
 
     for engine in engines {
+        let _ = app.emit("pdf-progress", format!("Running pandoc ({})…", engine));
+
         let mut args = vec![
             tmp_md.to_str().unwrap(),
             "-o", &output_path,
@@ -418,7 +428,12 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
             "--no-highlight",
         ];
         if engine == "xelatex" {
-            args.extend_from_slice(&["-V", "mainfont:Helvetica", "-V", "monofont:Menlo"]);
+            // Use system fonts with full Unicode/Vietnamese coverage
+            args.extend_from_slice(&[
+                "-V", "mainfont:Helvetica Neue",
+                "-V", "monofont:Menlo",
+                "-V", "mathfont:STIX Two Math",
+            ]);
         }
 
         let mut child = Command::new("pandoc")
@@ -429,7 +444,7 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
             .spawn()
             .map_err(|e| format!("Failed to run pandoc: {}", e))?;
 
-        let timeout = std::time::Duration::from_secs(60);
+        let timeout = std::time::Duration::from_secs(120);
         match child.wait_timeout(timeout) {
             Ok(Some(status)) if status.success() => {
                 let _ = fs::remove_dir_all(&tmp_dir);
@@ -445,6 +460,7 @@ fn export_pdf(markdown_content: String, output_path: String) -> Result<String, S
             }
             Ok(None) => {
                 let _ = child.kill();
+                let _ = child.wait();
                 last_err = format!("pandoc timed out after {}s with engine {}", timeout.as_secs(), engine);
             }
             Err(e) => {
