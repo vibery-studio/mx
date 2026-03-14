@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.7
+
+- Fix PDF export hanging forever (add 30s timeout for diagrams, 120s for pandoc)
+- Fix Vietnamese characters showing as boxes in PDF (use Helvetica Neue for full Unicode)
+- PDF export now runs in background with live progress updates
+- Release workflow now reads notes from CHANGELOG.md
+
 ## 0.9.6
 
 - Fix crash caused by KqueueWatcher drop panic when unwatching folders
