@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.9
+
+- Use Latin Modern Roman font in PDF export (Computer Modern look, classic LaTeX science paper style)
+- Falls back to Times New Roman if TeX Live Latin Modern fonts not installed
+
 ## 0.9.8
 
 - Fix mermaid diagrams not rendering in PDF (switch to base64url encoding)

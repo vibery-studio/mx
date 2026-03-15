@@ -1164,12 +1164,22 @@ async function exportPDF() {
   }).then((result) => {
     unlisten();
     if (statusWords) {
-      statusWords.textContent = `PDF saved: ${result.split("/").pop()}`;
+      statusWords.textContent = `PDF saved: ${result.split("/").pop()} (click to open)`;
       statusWords.style.color = "var(--success)";
+      statusWords.style.cursor = "pointer";
+      statusWords.title = result;
+      const openHandler = () => {
+        invoke("reveal_in_finder", { path: result });
+        statusWords.removeEventListener("click", openHandler);
+      };
+      statusWords.addEventListener("click", openHandler);
       setTimeout(() => {
         statusWords.textContent = prevText;
         statusWords.style.color = "";
-      }, 3000);
+        statusWords.style.cursor = "";
+        statusWords.title = "";
+        statusWords.removeEventListener("click", openHandler);
+      }, 5000);
     }
   }).catch((e) => {
     unlisten();

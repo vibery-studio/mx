@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "mx"
-version = "0.9.7"
+version = "0.9.9"
 dependencies = [
  "notify",
  "serde",

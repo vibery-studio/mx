@@ -322,6 +322,18 @@ fn base64url_encode(data: &[u8]) -> String {
 
 #[tauri::command]
 async fn export_pdf(markdown_content: String, output_path: String, app: tauri::AppHandle) -> Result<String, String> {
+    use std::io::Write;
+
+    // Run all blocking work on a separate thread to avoid blocking async runtime
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = export_pdf_blocking(markdown_content, output_path, app);
+        let _ = tx.send(result);
+    });
+    rx.recv().map_err(|e| format!("Thread error: {}", e))?
+}
+
+fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri::AppHandle) -> Result<String, String> {
     use std::process::Command;
     use std::io::Write;
 
@@ -418,7 +430,21 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
     let mut f = fs::File::create(&tmp_md).map_err(|e| e.to_string())?;
     f.write_all(processed.as_bytes()).map_err(|e| e.to_string())?;
 
-    // Step 3: Run pandoc — prefer xelatex for full Unicode/Vietnamese support
+    // Step 3: Write LaTeX header for Latin Modern fonts (science paper look)
+    // Latin Modern = OpenType version of Computer Modern (default LaTeX font)
+    // Falls back to Times New Roman if Latin Modern is not installed
+    let lm_header = tmp_dir.join("fonts.tex");
+    let lm_font_dir = "/usr/local/texlive/2025basic/texmf-dist/fonts/opentype/public/lm/";
+    let use_latin_modern = Path::new(lm_font_dir).join("lmroman10-regular.otf").exists();
+    if use_latin_modern {
+        let header = format!(
+            "\\setmainfont[Path={dir},BoldFont=lmroman10-bold.otf,ItalicFont=lmroman10-italic.otf,BoldItalicFont=lmroman10-bolditalic.otf]{{lmroman10-regular.otf}}\n\\setmonofont[Path={dir}]{{lmmono10-regular.otf}}\n",
+            dir = lm_font_dir
+        );
+        let _ = fs::write(&lm_header, header);
+    }
+
+    // Step 4: Run pandoc — prefer xelatex for full Unicode/Vietnamese support
     let engines = ["xelatex", "pdflatex"];
     let mut last_err = String::new();
 
@@ -426,28 +452,38 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
         let _ = app.emit("pdf-progress", format!("Running pandoc ({})…", engine));
 
         let mut args = vec![
-            tmp_md.to_str().unwrap(),
-            "-o", &output_path,
-            "--pdf-engine", engine,
-            "-V", "geometry:margin=1in",
-            "-V", "fontsize=11pt",
-            "-V", "colorlinks=true",
-            "--no-highlight",
+            tmp_md.to_str().unwrap().to_string(),
+            "-o".to_string(), output_path.clone(),
+            "--pdf-engine".to_string(), engine.to_string(),
+            "-V".to_string(), "geometry:margin=1in".to_string(),
+            "-V".to_string(), "fontsize=11pt".to_string(),
+            "-V".to_string(), "colorlinks=true".to_string(),
+            "--no-highlight".to_string(),
+            "--pdf-engine-opt=-interaction=nonstopmode".to_string(),
         ];
         if engine == "xelatex" {
-            // Use fonts with full Unicode/Vietnamese coverage
-            // Times New Roman: classic science paper look
-            args.extend_from_slice(&[
-                "-V", "mainfont:Times New Roman",
-                "-V", "monofont:.SF NS Mono",
-            ]);
+            if use_latin_modern {
+                // Use Latin Modern via header include (Computer Modern look)
+                args.push("-H".to_string());
+                args.push(lm_header.to_str().unwrap().to_string());
+            } else {
+                // Fallback: Times New Roman + SF NS Mono
+                args.extend_from_slice(&[
+                    "-V".to_string(), "mainfont:Times New Roman".to_string(),
+                    "-V".to_string(), "monofont:.SF NS Mono".to_string(),
+                ]);
+            }
         }
+
+        let stderr_file = tmp_dir.join("pandoc_stderr.log");
+        let stderr_out = fs::File::create(&stderr_file).map_err(|e| e.to_string())?;
 
         let mut child = Command::new("pandoc")
             .args(&args)
             .env("PATH", path_env)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::from(stderr_out))
             .spawn()
             .map_err(|e| format!("Failed to run pandoc: {}", e))?;
 
@@ -458,12 +494,7 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
                 return Ok(output_path);
             }
             Ok(Some(_)) => {
-                let stderr = child.stderr.take().map(|mut s| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut s, &mut buf).ok();
-                    buf
-                }).unwrap_or_default();
-                last_err = stderr;
+                last_err = fs::read_to_string(&stderr_file).unwrap_or_default();
             }
             Ok(None) => {
                 let _ = child.kill();
