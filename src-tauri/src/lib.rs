@@ -300,8 +300,8 @@ fn delete_recovery(recovery_path: String) -> Result<(), String> {
     Ok(())
 }
 
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+fn base64url_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut result = String::new();
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -312,13 +312,9 @@ fn base64_encode(data: &[u8]) -> String {
         result.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
         if chunk.len() > 1 {
             result.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
         }
         if chunk.len() > 2 {
             result.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
         }
     }
     result
@@ -330,6 +326,14 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
     use std::io::Write;
 
     let _ = app.emit("pdf-progress", "Preparing markdown…");
+
+    // Replace emoji that fonts can't render with text equivalents
+    let markdown_content = markdown_content
+        .replace("❌", "[X]")
+        .replace("✅", "[v]")
+        .replace("✓", "[v]")
+        .replace("⚠️", "[!]")
+        .replace("📁", "[dir]");
 
     let tmp_dir = std::env::temp_dir().join("mx_export");
     let _ = fs::create_dir_all(&tmp_dir);
@@ -365,9 +369,9 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
             if in_mermaid {
                 let _ = app.emit("pdf-progress", format!("Rendering diagram {}/{}…", mermaid_idx + 1, mermaid_total));
 
-                let png_file = tmp_dir.join(format!("diagram_{}.png", mermaid_idx));
-                let encoded = base64_encode(mermaid_buf.trim().as_bytes());
-                let url = format!("https://mermaid.ink/img/{}?type=png&bgColor=white", encoded);
+                let png_file = tmp_dir.join(format!("diagram_{}.jpg", mermaid_idx));
+                let encoded = base64url_encode(mermaid_buf.trim().as_bytes());
+                let url = format!("https://mermaid.ink/img/{}", encoded);
 
                 let download = Command::new("curl")
                     .args(["-sL", "--max-time", "30", "-o", png_file.to_str().unwrap(), &url])
@@ -428,11 +432,10 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
             "--no-highlight",
         ];
         if engine == "xelatex" {
-            // Use system fonts with full Unicode/Vietnamese coverage
+            // Use fonts with full Unicode/Vietnamese coverage
             args.extend_from_slice(&[
-                "-V", "mainfont:Helvetica Neue",
-                "-V", "monofont:Menlo",
-                "-V", "mathfont:STIX Two Math",
+                "-V", "mainfont:Arial Unicode MS",
+                "-V", "monofont:.SF NS Mono",
             ]);
         }
 
