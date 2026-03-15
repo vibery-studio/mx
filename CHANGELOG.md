@@ -1,9 +1,16 @@
 # Changelog
 
+## 0.9.8
+
+- Fix mermaid diagrams not rendering in PDF (switch to base64url encoding)
+- Use Times New Roman for science paper look in PDF export
+- Full Vietnamese/Unicode support in PDF (Times New Roman + SF NS Mono)
+- Replace unsupported emoji/arrows with text equivalents before export
+
 ## 0.9.7
 
 - Fix PDF export hanging forever (add 30s timeout for diagrams, 120s for pandoc)
-- Fix Vietnamese characters showing as boxes in PDF (use Helvetica Neue for full Unicode)
+- Fix Vietnamese characters showing as boxes in PDF
 - PDF export now runs in background with live progress updates
 - Release workflow now reads notes from CHANGELOG.md
 

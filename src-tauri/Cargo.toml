@@ -1,6 +1,6 @@
 [package]
 name = "mx"
-version = "0.9.7"
+version = "0.9.8"
 description = "Fast, lightweight markdown editor for the AI era"
 authors = ["Tony@Vibery Studio"]
 edition = "2024"

@@ -327,13 +327,16 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
 
     let _ = app.emit("pdf-progress", "Preparing markdown…");
 
-    // Replace emoji that fonts can't render with text equivalents
+    // Replace emoji/symbols that fonts can't render with text equivalents
     let markdown_content = markdown_content
         .replace("❌", "[X]")
         .replace("✅", "[v]")
         .replace("✓", "[v]")
         .replace("⚠️", "[!]")
-        .replace("📁", "[dir]");
+        .replace("📁", "[dir]")
+        .replace('→', "->")
+        .replace('←', "<-")
+        .replace('↓', "v");
 
     let tmp_dir = std::env::temp_dir().join("mx_export");
     let _ = fs::create_dir_all(&tmp_dir);
@@ -433,8 +436,9 @@ async fn export_pdf(markdown_content: String, output_path: String, app: tauri::A
         ];
         if engine == "xelatex" {
             // Use fonts with full Unicode/Vietnamese coverage
+            // Times New Roman: classic science paper look
             args.extend_from_slice(&[
-                "-V", "mainfont:Arial Unicode MS",
+                "-V", "mainfont:Times New Roman",
                 "-V", "monofont:.SF NS Mono",
             ]);
         }
