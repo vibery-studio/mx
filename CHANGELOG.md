@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.0
+
+- Multiple file tabs with preserved editor state (undo history, scroll position, selection)
+- Multiple windows via Cmd+Shift+N, each with independent tabs and file watchers
+- Customizable keyboard shortcuts with conflict detection (Help → Customize Shortcuts)
+- Format bar moved to compact bar above editor pane
+- Tab persistence across app restarts
+- Close tab with Cmd+W (prompts to save unsaved changes)
+- Fix recovery banner showing for unchanged files
+- Per-window file watchers instead of global
+
 ## 0.9.9
 
 - Use Latin Modern Roman font in PDF export (Computer Modern look, classic LaTeX science paper style)

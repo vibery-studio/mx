@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is mx
 
-A fast, lightweight markdown editor built with Tauri 2 + Rust. Successor to MacDown. Features: live split preview, Mermaid diagrams, KaTeX math, YAML frontmatter, PDF export via Pandoc, auto-update, native Apple Silicon support. Current version: 0.7.0. License: GPL-3.0.
+A fast, lightweight markdown editor built with Tauri 2 + Rust. Successor to MacDown. Features: live split preview, Mermaid diagrams, KaTeX math, YAML frontmatter, PDF export via Pandoc, auto-update, native Apple Silicon support. Current version: 1.0.0. License: GPL-3.0.
 
 ## Commands
 

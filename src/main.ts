@@ -20,6 +20,28 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
+const windowLabel = getCurrentWindow().label;
+const isMainWindow = windowLabel === "main";
+
+// --- Tab state ---
+
+interface Tab {
+  id: string;
+  filePath: string | null;
+  title: string;
+  editorState: EditorState;
+  scrollTop: number;
+  previewScrollTop: number;
+  isModified: boolean;
+}
+
+let tabs: Tab[] = [];
+let activeTabId: string | null = null;
+
+function getActiveTab(): Tab | null {
+  return tabs.find(t => t.id === activeTabId) ?? null;
+}
+
 // --- State ---
 
 let currentFilePath: string | null = null;
@@ -41,6 +63,7 @@ const RECOVERY_INTERVAL = 30000;
 // Line numbers state
 let showLineNumbers = localStorage.getItem("mx-line-numbers") !== "false";
 const lineNumbersCompartment = new Compartment();
+const keymapCompartment = new Compartment();
 
 // Font selection state
 const FONT_OPTIONS = ["System", "Inter", "Georgia", "Merriweather", "JetBrains Mono"] as const;
@@ -52,6 +75,173 @@ let isScrollSyncing = false;
 
 // Context menu state
 let contextMenuTarget: { path: string; isDir: boolean; parentPath: string } | null = null;
+
+// --- Keybinding registry ---
+
+interface ShortcutDef {
+  id: string;
+  label: string;
+  group: string;
+  defaultKey: string;
+  action: () => void;
+  global?: boolean; // handled via document keydown, not CM6
+}
+
+// Action map - functions are assigned after they're defined
+const actions: Record<string, () => void> = {};
+
+function getDefaultBindings(): ShortcutDef[] {
+  return [
+    { id: "file.new", label: "New File", group: "File", defaultKey: "Mod-n", action: actions["file.new"] },
+    { id: "file.open", label: "Open File", group: "File", defaultKey: "Mod-o", action: actions["file.open"] },
+    { id: "file.save", label: "Save", group: "File", defaultKey: "Mod-s", action: actions["file.save"] },
+    { id: "file.close-tab", label: "Close Tab", group: "File", defaultKey: "Mod-w", action: actions["file.close-tab"] },
+    { id: "file.new-window", label: "New Window", group: "File", defaultKey: "Mod-Shift-N", action: actions["file.new-window"], global: true },
+    { id: "view.toggle-preview", label: "Toggle Preview", group: "View", defaultKey: "Mod-p", action: actions["view.toggle-preview"] },
+    { id: "view.read-mode", label: "Read Mode", group: "View", defaultKey: "Mod-e", action: actions["view.read-mode"] },
+    { id: "view.toggle-sidebar", label: "Toggle Sidebar", group: "View", defaultKey: "Mod-b", action: actions["view.toggle-sidebar"] },
+    { id: "view.zen-mode", label: "Zen Mode", group: "View", defaultKey: "Mod-Shift-z", action: actions["view.zen-mode"], global: true },
+    { id: "view.zoom-in", label: "Zoom In", group: "View", defaultKey: "Mod-=", action: actions["view.zoom-in"] },
+    { id: "view.zoom-out", label: "Zoom Out", group: "View", defaultKey: "Mod--", action: actions["view.zoom-out"] },
+    { id: "view.zoom-reset", label: "Zoom Reset", group: "View", defaultKey: "Mod-0", action: actions["view.zoom-reset"] },
+    { id: "edit.copy-formatted", label: "Copy Formatted", group: "Edit", defaultKey: "Mod-Shift-c", action: actions["edit.copy-formatted"] },
+    { id: "search.command-palette", label: "Command Palette", group: "Search", defaultKey: "Mod-Shift-p", action: actions["search.command-palette"] },
+    { id: "search.file-search", label: "File Search", group: "Search", defaultKey: "Mod-Shift-f", action: actions["search.file-search"] },
+    { id: "search.content-search", label: "Content Search", group: "Search", defaultKey: "Mod-Alt-f", action: actions["search.content-search"] },
+    { id: "help.shortcuts", label: "Keyboard Shortcuts", group: "Help", defaultKey: "Mod-/", action: actions["help.shortcuts"] },
+  ];
+}
+
+function getCustomBindings(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem("mx-keybindings") || "{}"); }
+  catch { return {}; }
+}
+
+function getBinding(id: string): string {
+  const custom = getCustomBindings();
+  if (id in custom) return custom[id];
+  const def = getDefaultBindings().find(d => d.id === id);
+  return def?.defaultKey ?? "";
+}
+
+function setCustomBinding(id: string, key: string) {
+  const custom = getCustomBindings();
+  const def = getDefaultBindings().find(d => d.id === id);
+  if (def && key === def.defaultKey) {
+    delete custom[id]; // back to default, no need to store
+  } else {
+    custom[id] = key;
+  }
+  localStorage.setItem("mx-keybindings", JSON.stringify(custom));
+  applyBindings();
+}
+
+function resetAllBindings() {
+  localStorage.removeItem("mx-keybindings");
+  applyBindings();
+}
+
+function findConflict(key: string, excludeId: string): ShortcutDef | null {
+  if (!key) return null;
+  const bindings = getDefaultBindings();
+  for (const def of bindings) {
+    if (def.id === excludeId) continue;
+    if (getBinding(def.id).toLowerCase() === key.toLowerCase()) return def;
+  }
+  return null;
+}
+
+const OS_RESERVED = new Set(["mod-q", "mod-h", "mod-m", "mod-,", "mod-tab"]);
+
+function isOSReserved(key: string): boolean {
+  return OS_RESERVED.has(key.toLowerCase());
+}
+
+function keyEventToCM6(e: KeyboardEvent): string {
+  const parts: string[] = [];
+  if (e.metaKey || e.ctrlKey) parts.push("Mod");
+  if (e.shiftKey) parts.push("Shift");
+  if (e.altKey) parts.push("Alt");
+
+  let key = e.key;
+  // Normalize key names
+  if (key === " ") key = "Space";
+  else if (key === "ArrowUp") key = "Up";
+  else if (key === "ArrowDown") key = "Down";
+  else if (key === "ArrowLeft") key = "Left";
+  else if (key === "ArrowRight") key = "Right";
+  // Don't include modifier keys alone
+  if (["Control", "Meta", "Shift", "Alt"].includes(key)) return "";
+  parts.push(key.length === 1 ? key.toLowerCase() : key);
+  return parts.join("-");
+}
+
+function cm6KeyToDisplay(key: string): string {
+  if (!key) return "";
+  return key
+    .replace(/Mod/g, "\u2318")
+    .replace(/Shift/g, "\u21E7")
+    .replace(/Alt/g, "\u2325")
+    .replace(/-/g, "")
+    .replace(/\b([a-z])\b/g, (_, c) => c.toUpperCase());
+}
+
+function cm6KeyMatchesEvent(cm6Key: string, e: KeyboardEvent): boolean {
+  if (!cm6Key) return false;
+  const parts = cm6Key.split("-");
+  const needMod = parts.includes("Mod");
+  const needShift = parts.includes("Shift");
+  const needAlt = parts.includes("Alt");
+  const keyPart = parts.filter(p => p !== "Mod" && p !== "Shift" && p !== "Alt").join("-");
+
+  if (needMod !== (e.metaKey || e.ctrlKey)) return false;
+  if (needShift !== e.shiftKey) return false;
+  if (needAlt !== e.altKey) return false;
+
+  const eventKey = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  return eventKey === keyPart || eventKey.toLowerCase() === keyPart.toLowerCase();
+}
+
+function buildKeymap() {
+  const bindings = getDefaultBindings().filter(d => !d.global);
+  const km: { key: string; run: () => boolean }[] = [];
+  for (const def of bindings) {
+    const key = getBinding(def.id);
+    if (key && def.action) {
+      km.push({ key, run: () => { def.action(); return true; } });
+    }
+  }
+  return keymap.of(km);
+}
+
+let globalKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+function applyBindings() {
+  // Reconfigure CM6 keymap
+  if (editor) {
+    editor.dispatch({ effects: keymapCompartment.reconfigure(buildKeymap()) });
+  }
+
+  // Replace global keydown handler
+  if (globalKeyHandler) {
+    document.removeEventListener("keydown", globalKeyHandler);
+  }
+  const globalBindings = getDefaultBindings().filter(d => d.global);
+  globalKeyHandler = (e: KeyboardEvent) => {
+    for (const def of globalBindings) {
+      const key = getBinding(def.id);
+      if (key && cm6KeyMatchesEvent(key, e) && def.action) {
+        e.preventDefault();
+        def.action();
+        return;
+      }
+    }
+  };
+  document.addEventListener("keydown", globalKeyHandler);
+
+  // Re-render shortcuts modal if open
+  renderShortcutsContent();
+}
 
 // --- Recent files ---
 
@@ -563,6 +753,11 @@ listen("folder-changed", () => {
 function setModified(value: boolean) {
   const indicator = document.getElementById("modified-indicator");
   if (indicator) indicator.classList.toggle("hidden", !value);
+  const tab = getActiveTab();
+  if (tab && tab.isModified !== value) {
+    tab.isModified = value;
+    renderTabs();
+  }
 }
 
 // --- File operations ---
@@ -573,8 +768,13 @@ function setFilename(path: string | null) {
   if (el) el.textContent = path ? path.split("/").pop()! : "No file open";
   if (path) localStorage.setItem("mx-last-file", path);
   else localStorage.removeItem("mx-last-file");
+  const tab = getActiveTab();
+  if (tab) {
+    tab.filePath = path;
+    tab.title = path ? path.split("/").pop()! : "Untitled";
+    renderTabs();
+  }
   updateBreadcrumb();
-  // Start watching the new file for external changes
   startFileWatch(path);
 }
 
@@ -591,6 +791,7 @@ async function saveFile() {
       setFilename(path);
       setModified(false);
       deleteRecoveryForCurrent();
+      persistOpenTabs();
     } catch (e) {
       console.error("Save failed:", e);
     }
@@ -601,6 +802,7 @@ async function saveFile() {
     await invoke("save_file", { path: currentFilePath, content });
     setModified(false);
     deleteRecoveryForCurrent();
+    persistOpenTabs();
     setTimeout(() => { fileWatchSuppressed = false; }, 1000);
   } catch (e) {
     fileWatchSuppressed = false;
@@ -621,15 +823,39 @@ async function openFileDialog() {
 }
 
 async function openFile(path: string, skipScrollRestore = false) {
+  // Check if file is already open in a tab
+  const existingTab = tabs.find(t => t.filePath === path);
+  if (existingTab) {
+    switchToTab(existingTab.id);
+    return;
+  }
+
   try {
     saveScrollPosition();
     const result = await invoke<{ path: string; content: string }>("read_file", { path });
-    editor.dispatch({
-      changes: { from: 0, to: editor.state.doc.length, insert: result.content },
-    });
+
+    // Check again after async (race condition guard)
+    const existingAfter = tabs.find(t => t.filePath === result.path);
+    if (existingAfter) {
+      switchToTab(existingAfter.id);
+      return;
+    }
+
+    // Save current tab state before switching
+    saveActiveTabState();
+
+    const tab = createTab(result.path, result.content);
+    tabs.push(tab);
+    activeTabId = tab.id;
+    currentFilePath = result.path;
+
+    editor.setState(tab.editorState);
     setFilename(result.path);
     setModified(false);
     addRecentFile(result.path);
+    deleteRecoveryForCurrent(); // clean up stale recovery for this file
+    renderTabs();
+    persistOpenTabs();
     if (!skipScrollRestore) restoreScrollPosition(result.path);
   } catch (e) {
     console.error("Open failed:", e);
@@ -655,12 +881,17 @@ async function newFile() {
       }
     }
   } else {
-    // No folder — just reset editor
-    editor.dispatch({
-      changes: { from: 0, to: editor.state.doc.length, insert: "" },
-    });
+    // No folder — create a new untitled tab
+    saveActiveTabState();
+    const tab = createTab(null, "");
+    tabs.push(tab);
+    activeTabId = tab.id;
+    currentFilePath = null;
+    editor.setState(tab.editorState);
     setFilename(null);
     setModified(false);
+    renderTabs();
+    persistOpenTabs();
   }
 }
 
@@ -695,7 +926,7 @@ function scheduleAutoSave() {
 function scheduleRecovery() {
   if (recoveryTimer) clearTimeout(recoveryTimer);
   recoveryTimer = setTimeout(async () => {
-    if (currentFilePath) {
+    if (currentFilePath && isEditorDirty()) {
       try {
         await invoke("save_recovery", {
           originalPath: currentFilePath,
@@ -870,10 +1101,10 @@ function onContentChange(view: EditorView) {
 
 function initDividerDrag() {
   const divider = $("#divider");
-  const editorPane = $("#editor-pane");
+  const editorWrapper = $("#editor-wrapper");
   const previewPane = $("#preview-pane");
   const container = $("#editor-container");
-  if (!divider || !editorPane || !previewPane || !container) return;
+  if (!divider || !editorWrapper || !previewPane || !container) return;
 
   let dragging = false;
 
@@ -892,7 +1123,7 @@ function initDividerDrag() {
     const offset = e.clientX - rect.left - sidebarWidth;
     const total = rect.width - sidebarWidth;
     const pct = Math.max(20, Math.min(80, (offset / total) * 100));
-    editorPane.style.flexBasis = `${pct}%`;
+    editorWrapper.style.flexBasis = `${pct}%`;
     previewPane.style.flexBasis = `${100 - pct}%`;
   });
 
@@ -949,26 +1180,26 @@ let currentViewMode: ViewMode = (localStorage.getItem("mx-view-mode") as ViewMod
 function setViewMode(mode: ViewMode) {
   const previewPane = $("#preview-pane");
   const divider = $("#divider");
-  const editorPane = $("#editor-pane");
-  if (!previewPane || !divider || !editorPane) return;
+  const editorWrapper = $("#editor-wrapper");
+  if (!previewPane || !divider || !editorWrapper) return;
 
   currentViewMode = mode;
   localStorage.setItem("mx-view-mode", mode);
 
   if (mode === "split") {
-    editorPane.style.display = "";
-    editorPane.style.flexBasis = "";
+    editorWrapper.style.display = "";
+    editorWrapper.style.flexBasis = "";
     divider.style.display = "";
     previewPane.style.display = "";
     previewPane.style.flexBasis = "";
     updatePreview(editor.state.doc.toString());
   } else if (mode === "editor") {
-    editorPane.style.display = "";
-    editorPane.style.flexBasis = "100%";
+    editorWrapper.style.display = "";
+    editorWrapper.style.flexBasis = "100%";
     divider.style.display = "none";
     previewPane.style.display = "none";
   } else if (mode === "preview") {
-    editorPane.style.display = "none";
+    editorWrapper.style.display = "none";
     divider.style.display = "none";
     previewPane.style.display = "";
     previewPane.style.flexBasis = "100%";
@@ -1641,30 +1872,35 @@ interface PaletteCommand {
 }
 
 function getCommands(): PaletteCommand[] {
+  // Helper to get display shortcut from registry
+  const sk = (id: string) => cm6KeyToDisplay(getBinding(id)) || undefined;
   return [
-    { label: "New File", shortcut: "⌘N", action: newFile },
-    { label: "Open File", shortcut: "⌘O", action: openFileDialog },
+    { label: "New File", shortcut: sk("file.new"), action: newFile },
+    { label: "Open File", shortcut: sk("file.open"), action: openFileDialog },
     { label: "Open Folder", action: () => openFolder() },
-    { label: "Save", shortcut: "⌘S", action: saveFile },
-    { label: "Toggle Preview", shortcut: "⌘P", action: togglePreview },
-    { label: "Toggle Sidebar", shortcut: "⌘B", action: toggleSidebar },
-    { label: "Read Mode", shortcut: "⌘E", action: toggleReadMode },
-    { label: "Copy Formatted HTML", shortcut: "⌘⇧C", action: copyFormattedHTML },
+    { label: "New Window", shortcut: sk("file.new-window"), action: () => invoke("create_window", { filePath: null }) },
+    { label: "Save", shortcut: sk("file.save"), action: saveFile },
+    { label: "Close Tab", shortcut: sk("file.close-tab"), action: closeActiveTab },
+    { label: "Toggle Preview", shortcut: sk("view.toggle-preview"), action: togglePreview },
+    { label: "Toggle Sidebar", shortcut: sk("view.toggle-sidebar"), action: toggleSidebar },
+    { label: "Read Mode", shortcut: sk("view.read-mode"), action: toggleReadMode },
+    { label: "Copy Formatted HTML", shortcut: sk("edit.copy-formatted"), action: copyFormattedHTML },
     { label: "Export PDF", action: exportPDF },
     { label: "Export HTML", action: exportHTML },
     { label: "Export DOCX", action: exportDOCX },
-    { label: "Zen Mode", shortcut: "⌘⇧Z", action: toggleZenMode },
+    { label: "Zen Mode", shortcut: sk("view.zen-mode"), action: toggleZenMode },
     { label: "Copy Raw Markdown", action: copyRawMarkdown },
     { label: "Copy Plain Text", action: copyPlainText },
     { label: "Toggle Outline", action: toggleOutline },
     { label: "Toggle Line Numbers", action: toggleLineNumbers },
     { label: "Toggle Auto-save", action: toggleAutoSave },
     { label: "Cycle Theme", action: cycleTheme },
-    { label: "Zoom In", shortcut: "⌘+", action: zoomIn },
-    { label: "Zoom Out", shortcut: "⌘-", action: zoomOut },
-    { label: "Zoom Reset", shortcut: "⌘0", action: zoomReset },
-    { label: "File Search", shortcut: "⌘⇧F", action: openFileSearch },
-    { label: "Search in Files", shortcut: "⌘⌥F", action: () => { sidebarSearchMode ? deactivateSidebarSearch() : activateSidebarSearch(); } },
+    { label: "Zoom In", shortcut: sk("view.zoom-in"), action: zoomIn },
+    { label: "Zoom Out", shortcut: sk("view.zoom-out"), action: zoomOut },
+    { label: "Zoom Reset", shortcut: sk("view.zoom-reset"), action: zoomReset },
+    { label: "File Search", shortcut: sk("search.file-search"), action: openFileSearch },
+    { label: "Search in Files", shortcut: sk("search.content-search"), action: () => { sidebarSearchMode ? deactivateSidebarSearch() : activateSidebarSearch(); } },
+    { label: "Customize Shortcuts", action: toggleShortcutsModal },
     { label: "Cycle Font", action: cycleFont },
     { label: "Reload Custom CSS", action: loadCustomCSS },
     { label: "Check for Updates", action: () => doUpdateCheck(true) },
@@ -2001,6 +2237,224 @@ function restoreScrollPosition(path: string) {
   }
 }
 
+// --- Tab management ---
+
+function createEditorExtensions() {
+  return [
+    lineNumbersCompartment.of(showLineNumbers ? lineNumbers() : []),
+    highlightActiveLine(),
+    highlightActiveLineGutter(),
+    history(),
+    bracketMatching(),
+    closeBrackets(),
+    foldGutter(),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    markdown({ base: markdownLanguage, codeLanguages: languages }),
+    search(),
+    themeCompartment.of(getEffectiveTheme() === "dark" ? oneDark : editorLightTheme),
+    editorFillTheme,
+    keymap.of([
+      ...defaultKeymap,
+      ...historyKeymap,
+      ...searchKeymap,
+      ...foldKeymap,
+      indentWithTab,
+    ]),
+    keymapCompartment.of(buildKeymap()),
+    EditorView.updateListener.of((update: ViewUpdate) => {
+      if (update.docChanged || update.selectionSet) {
+        if (update.docChanged) onContentChange(update.view);
+        updateCursorPosition(update.view);
+        updateSelectionCount(update.view);
+      }
+    }),
+  ];
+}
+
+function createTab(filePath: string | null, content: string): Tab {
+  return {
+    id: crypto.randomUUID(),
+    filePath,
+    title: filePath ? filePath.split("/").pop()! : "Untitled",
+    editorState: EditorState.create({ doc: content, extensions: createEditorExtensions() }),
+    scrollTop: 0,
+    previewScrollTop: 0,
+    isModified: false,
+  };
+}
+
+function saveActiveTabState() {
+  const tab = getActiveTab();
+  if (!tab || !editor) return;
+  tab.editorState = editor.state;
+  tab.scrollTop = editor.scrollDOM.scrollTop;
+  const previewPane = document.getElementById("preview-pane");
+  if (previewPane) tab.previewScrollTop = previewPane.scrollTop;
+}
+
+function switchToTab(tabId: string) {
+  if (tabId === activeTabId) return;
+
+  // Save current tab state
+  saveActiveTabState();
+
+  const newTab = tabs.find(t => t.id === tabId);
+  if (!newTab) return;
+
+  activeTabId = tabId;
+  currentFilePath = newTab.filePath;
+
+  // Restore editor state
+  editor.setState(newTab.editorState);
+
+  // Restore scroll positions after layout
+  requestAnimationFrame(() => {
+    editor.scrollDOM.scrollTop = newTab.scrollTop;
+    const previewPane = document.getElementById("preview-pane");
+    if (previewPane) previewPane.scrollTop = newTab.previewScrollTop;
+  });
+
+  // Update UI
+  const el = document.getElementById("filename");
+  if (el) el.textContent = newTab.filePath ? newTab.filePath.split("/").pop()! : "No file open";
+  if (newTab.filePath) localStorage.setItem("mx-last-file", newTab.filePath);
+
+  const indicator = document.getElementById("modified-indicator");
+  if (indicator) indicator.classList.toggle("hidden", !newTab.isModified);
+
+  updateBreadcrumb();
+  startFileWatch(newTab.filePath);
+  updatePreview(editor.state.doc.toString());
+  updateWordCount(editor.state.doc.toString());
+  updateCursorPosition(editor);
+  renderTabs();
+  persistOpenTabs();
+}
+
+function renderTabs() {
+  const tabBar = document.getElementById("tab-bar");
+  if (!tabBar) return;
+
+  // Hide tab bar if 0 or 1 tabs
+  if (tabs.length <= 1) {
+    tabBar.innerHTML = "";
+    return;
+  }
+
+  tabBar.innerHTML = tabs.map(tab => {
+    const activeClass = tab.id === activeTabId ? " active" : "";
+    const modifiedDot = tab.isModified ? '<span class="tab-modified">●</span>' : "";
+    const title = tab.title || "Untitled";
+    return `<div class="tab${activeClass}" data-tab-id="${tab.id}">
+      <span class="tab-title">${escapeHtml(title)}</span>
+      ${modifiedDot}
+      <span class="tab-close" data-tab-id="${tab.id}">✕</span>
+    </div>`;
+  }).join("");
+
+  // Event listeners
+  tabBar.querySelectorAll(".tab").forEach(el => {
+    const tabId = (el as HTMLElement).dataset.tabId!;
+
+    el.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).classList.contains("tab-close")) return;
+      switchToTab(tabId);
+    });
+
+    // Middle-click to close
+    el.addEventListener("mousedown", (e) => {
+      if ((e as MouseEvent).button === 1) {
+        e.preventDefault();
+        closeTab(tabId);
+      }
+    });
+  });
+
+  tabBar.querySelectorAll(".tab-close").forEach(el => {
+    const tabId = (el as HTMLElement).dataset.tabId!;
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(tabId);
+    });
+  });
+}
+
+async function closeTab(tabId: string) {
+  const tab = tabs.find(t => t.id === tabId);
+  if (!tab) return;
+
+  // Check for unsaved changes
+  if (tab.isModified) {
+    // If not active, switch to it first so user can see the content
+    if (tabId !== activeTabId) switchToTab(tabId);
+    const shouldSave = await showConfirmDialog(`Save changes to ${tab.title}? (Y/N)`);
+    if (shouldSave) {
+      await saveFile();
+    }
+    // If user chose not to save, proceed to close. There's no cancel path with showConfirmDialog.
+  }
+
+  const idx = tabs.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+  tabs.splice(idx, 1);
+
+  if (tabs.length === 0) {
+    // Create a new untitled tab
+    const newTab = createTab(null, "");
+    tabs.push(newTab);
+    activeTabId = newTab.id;
+    currentFilePath = null;
+    editor.setState(newTab.editorState);
+    setFilename(null);
+    setModified(false);
+    renderTabs();
+    persistOpenTabs();
+    return;
+  }
+
+  if (tabId === activeTabId) {
+    // Switch to adjacent tab
+    const newIdx = Math.min(idx, tabs.length - 1);
+    activeTabId = tabs[newIdx].id;
+    const newTab = tabs[newIdx];
+    currentFilePath = newTab.filePath;
+    editor.setState(newTab.editorState);
+
+    requestAnimationFrame(() => {
+      editor.scrollDOM.scrollTop = newTab.scrollTop;
+      const previewPane = document.getElementById("preview-pane");
+      if (previewPane) previewPane.scrollTop = newTab.previewScrollTop;
+    });
+
+    const el = document.getElementById("filename");
+    if (el) el.textContent = newTab.filePath ? newTab.filePath.split("/").pop()! : "No file open";
+    if (newTab.filePath) localStorage.setItem("mx-last-file", newTab.filePath);
+
+    const indicator = document.getElementById("modified-indicator");
+    if (indicator) indicator.classList.toggle("hidden", !newTab.isModified);
+
+    updateBreadcrumb();
+    startFileWatch(newTab.filePath);
+    updatePreview(editor.state.doc.toString());
+    updateWordCount(editor.state.doc.toString());
+    updateCursorPosition(editor);
+  }
+
+  renderTabs();
+  persistOpenTabs();
+}
+
+function closeActiveTab() {
+  if (activeTabId) closeTab(activeTabId);
+}
+
+function persistOpenTabs() {
+  if (!isMainWindow) return;
+  localStorage.setItem("mx-open-tabs", JSON.stringify(
+    tabs.map(t => ({ filePath: t.filePath, isActive: t.id === activeTabId }))
+  ));
+}
+
 // --- Selection count (#6) ---
 
 function updateSelectionCount(view: EditorView) {
@@ -2039,41 +2493,29 @@ function toggleHelp() {
   }
   const content = document.getElementById("help-content");
   if (content) {
-    const shortcuts = [
-      ["File", [
-        ["⌘N", "New file"],
-        ["⌘O", "Open file"],
-        ["⌘S", "Save"],
-        ["⌘⇧S", "Save as"],
-      ]],
-      ["View", [
-        ["⌘P", "Toggle preview"],
-        ["⌘E", "Read mode"],
-        ["⌘B", "Toggle sidebar"],
-        ["⌘⇧Z", "Zen mode"],
-        ["⌘+/⌘-/⌘0", "Zoom in/out/reset"],
-      ]],
-      ["Search", [
-        ["⌘F", "Find in file"],
-        ["⌘H", "Find & replace"],
-        ["⌘⇧F", "File search"],
-        ["⌘⌥F", "Content search"],
-        ["⌘⇧P", "Command palette"],
-      ]],
-      ["Edit", [
-        ["⌘Z/⌘⇧Z", "Undo/redo"],
-        ["⌘⇧C", "Copy formatted HTML"],
-        ["Tab/⇧Tab", "Indent/outdent"],
-      ]],
-      ["Export", [
-        ["⌘⇧E", "Export PDF"],
-      ]],
-    ] as [string, [string, string][]][];
-    content.innerHTML = shortcuts.map(([group, keys]) =>
+    // Build from registry + some fixed entries
+    const registryBindings = getDefaultBindings();
+    const groups = new Map<string, [string, string][]>();
+    for (const def of registryBindings) {
+      if (!groups.has(def.group)) groups.set(def.group, []);
+      groups.get(def.group)!.push([cm6KeyToDisplay(getBinding(def.id)), def.label]);
+    }
+    // Add fixed shortcuts not in registry
+    if (!groups.has("Search")) groups.set("Search", []);
+    groups.get("Search")!.push(["⌘F", "Find in file"], ["⌘H", "Find & replace"]);
+    if (!groups.has("Edit")) groups.set("Edit", []);
+    groups.get("Edit")!.push(["⌘Z/⌘⇧Z", "Undo/redo"], ["Tab/⇧Tab", "Indent/outdent"]);
+
+    content.innerHTML = Array.from(groups.entries()).map(([group, keys]) =>
       `<div class="help-group"><h3>${group}</h3>${keys.map(([k, d]) =>
-        `<div class="help-row"><kbd>${k}</kbd><span>${d}</span></div>`
+        `<div class="help-row"><kbd>${k || "—"}</kbd><span>${d}</span></div>`
       ).join("")}</div>`
-    ).join("");
+    ).join("") + `<div class="help-customize"><button id="help-customize-btn">Customize Shortcuts...</button></div>`;
+
+    document.getElementById("help-customize-btn")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+      toggleShortcutsModal();
+    });
   }
   modal.classList.remove("hidden");
 }
@@ -2445,6 +2887,157 @@ async function loadCustomCSS() {
   } catch { /* ignore */ }
 }
 
+// --- Register keybinding actions (must be after function definitions) ---
+
+actions["file.new"] = () => newFile();
+actions["file.open"] = () => openFileDialog();
+actions["file.save"] = () => saveFile();
+actions["file.close-tab"] = () => closeActiveTab();
+actions["file.new-window"] = () => invoke("create_window", { filePath: null });
+actions["view.toggle-preview"] = () => togglePreview();
+actions["view.read-mode"] = () => toggleReadMode();
+actions["view.toggle-sidebar"] = () => toggleSidebar();
+actions["view.zen-mode"] = () => toggleZenMode();
+actions["view.zoom-in"] = () => zoomIn();
+actions["view.zoom-out"] = () => zoomOut();
+actions["view.zoom-reset"] = () => zoomReset();
+actions["edit.copy-formatted"] = () => copyFormattedHTML();
+actions["search.command-palette"] = () => toggleCommandPalette();
+actions["search.file-search"] = () => openFileSearch();
+actions["search.content-search"] = () => { sidebarSearchMode ? deactivateSidebarSearch() : activateSidebarSearch(); };
+actions["help.shortcuts"] = () => toggleHelp();
+
+// --- Shortcuts settings modal ---
+
+function renderShortcutsContent() {
+  const content = document.getElementById("shortcuts-content");
+  if (!content || document.getElementById("shortcuts-modal")?.classList.contains("hidden")) return;
+
+  const bindings = getDefaultBindings();
+  const groups = new Map<string, ShortcutDef[]>();
+  for (const def of bindings) {
+    if (!groups.has(def.group)) groups.set(def.group, []);
+    groups.get(def.group)!.push(def);
+  }
+
+  const custom = getCustomBindings();
+  content.innerHTML = Array.from(groups.entries()).map(([group, defs]) =>
+    `<div class="shortcut-group"><h3>${group}</h3>${defs.map(def => {
+      const current = getBinding(def.id);
+      const isCustom = def.id in custom;
+      const display = cm6KeyToDisplay(current) || "Unbound";
+      return `<div class="shortcut-row" data-id="${def.id}">
+        <span class="shortcut-label">${def.label}</span>
+        <kbd class="shortcut-key${isCustom ? " custom" : ""}">${display}</kbd>
+        <button class="shortcut-edit" title="Click to rebind">Edit</button>
+      </div>`;
+    }).join("")}</div>`
+  ).join("");
+
+  // Wire edit buttons
+  content.querySelectorAll(".shortcut-edit").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest(".shortcut-row") as HTMLElement;
+      startCapture(row);
+    });
+  });
+
+  // Wire row clicks too
+  content.querySelectorAll(".shortcut-row").forEach(row => {
+    row.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).classList.contains("shortcut-edit")) return;
+      startCapture(row as HTMLElement);
+    });
+  });
+}
+
+function startCapture(row: HTMLElement) {
+  const id = row.dataset.id!;
+  // Remove any existing capture
+  document.querySelectorAll(".shortcut-row.capturing").forEach(r => r.classList.remove("capturing"));
+
+  row.classList.add("capturing");
+  const kbd = row.querySelector(".shortcut-key")!;
+  const originalText = kbd.textContent;
+  kbd.textContent = "Press shortcut...";
+
+  const handler = (e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === "Escape") {
+      cleanup();
+      kbd.textContent = originalText;
+      row.classList.remove("capturing");
+      return;
+    }
+
+    if (e.key === "Backspace" || e.key === "Delete") {
+      cleanup();
+      setCustomBinding(id, "");
+      return;
+    }
+
+    const cm6Key = keyEventToCM6(e);
+    if (!cm6Key) return; // modifier-only press
+
+    const conflict = findConflict(cm6Key, id);
+    if (conflict) {
+      kbd.textContent = `${cm6KeyToDisplay(cm6Key)} (used by ${conflict.label})`;
+      kbd.classList.add("conflict");
+      // Wait for Enter to confirm, Escape to cancel
+      const confirmHandler = (e2: KeyboardEvent) => {
+        e2.preventDefault();
+        e2.stopPropagation();
+        if (e2.key === "Enter") {
+          // Swap: give conflict the old binding
+          const oldKey = getBinding(id);
+          setCustomBinding(conflict.id, oldKey);
+          setCustomBinding(id, cm6Key);
+          cleanupConfirm();
+        } else if (e2.key === "Escape") {
+          cleanupConfirm();
+          kbd.textContent = originalText;
+          kbd.classList.remove("conflict");
+          row.classList.remove("capturing");
+        }
+      };
+      const cleanupConfirm = () => {
+        document.removeEventListener("keydown", confirmHandler, true);
+        kbd.classList.remove("conflict");
+      };
+      document.removeEventListener("keydown", handler, true);
+      document.addEventListener("keydown", confirmHandler, true);
+      return;
+    }
+
+    if (isOSReserved(cm6Key)) {
+      kbd.textContent = `${cm6KeyToDisplay(cm6Key)} (system shortcut!)`;
+    }
+
+    cleanup();
+    setCustomBinding(id, cm6Key);
+  };
+
+  const cleanup = () => {
+    document.removeEventListener("keydown", handler, true);
+    row.classList.remove("capturing");
+  };
+
+  document.addEventListener("keydown", handler, true);
+}
+
+function toggleShortcutsModal() {
+  const modal = document.getElementById("shortcuts-modal");
+  if (!modal) return;
+  if (!modal.classList.contains("hidden")) {
+    modal.classList.add("hidden");
+    return;
+  }
+  modal.classList.remove("hidden");
+  renderShortcutsContent();
+}
+
 // --- Init ---
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -2454,52 +3047,13 @@ window.addEventListener("DOMContentLoaded", () => {
   // Apply theme before creating editor
   document.documentElement.setAttribute("data-theme", currentThemeMode);
 
+  // Create initial tab
+  const initialTab = createTab(null, SAMPLE_CONTENT);
+  tabs.push(initialTab);
+  activeTabId = initialTab.id;
+
   editor = new EditorView({
-    state: EditorState.create({
-      doc: SAMPLE_CONTENT,
-      extensions: [
-        lineNumbersCompartment.of(showLineNumbers ? lineNumbers() : []),
-        highlightActiveLine(),
-        highlightActiveLineGutter(),
-        history(),
-        bracketMatching(),
-        closeBrackets(),
-        foldGutter(),
-        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-        markdown({ base: markdownLanguage, codeLanguages: languages }),
-        search(),
-        themeCompartment.of(getEffectiveTheme() === "dark" ? oneDark : editorLightTheme),
-        editorFillTheme,
-        keymap.of([
-          ...defaultKeymap,
-          ...historyKeymap,
-          ...searchKeymap,
-          ...foldKeymap,
-          indentWithTab,
-          { key: "Mod-o", run: () => { openFileDialog(); return true; } },
-          { key: "Mod-s", run: () => { saveFile(); return true; } },
-          { key: "Mod-n", run: () => { newFile(); return true; } },
-          { key: "Mod-p", run: () => { togglePreview(); return true; } },
-          { key: "Mod-b", run: () => { toggleSidebar(); return true; } },
-          { key: "Mod-e", run: () => { toggleReadMode(); return true; } },
-          { key: "Mod-Shift-c", run: () => { copyFormattedHTML(); return true; } },
-          { key: "Mod-Shift-p", run: () => { toggleCommandPalette(); return true; } },
-          { key: "Mod-Shift-f", run: () => { openFileSearch(); return true; } },
-          { key: "Mod-Alt-f", run: () => { sidebarSearchMode ? deactivateSidebarSearch() : activateSidebarSearch(); return true; } },
-          { key: "Mod-=", run: () => { zoomIn(); return true; } },
-          { key: "Mod--", run: () => { zoomOut(); return true; } },
-          { key: "Mod-0", run: () => { zoomReset(); return true; } },
-          { key: "Mod-/", run: () => { toggleHelp(); return true; } },
-        ]),
-        EditorView.updateListener.of((update: ViewUpdate) => {
-          if (update.docChanged || update.selectionSet) {
-            if (update.docChanged) onContentChange(update.view);
-            updateCursorPosition(update.view);
-            updateSelectionCount(update.view);
-          }
-        }),
-      ],
-    }),
+    state: initialTab.editorState,
     parent: editorPane,
   });
 
@@ -2525,6 +3079,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-new")?.addEventListener("click", () => newFile());
   document.getElementById("btn-open")?.addEventListener("click", () => openFileDialog());
   document.getElementById("btn-open-folder")?.addEventListener("click", () => openFolder());
+  document.getElementById("btn-new-window")?.addEventListener("click", () => invoke("create_window", { filePath: null }));
   document.getElementById("btn-recent")?.addEventListener("click", () => toggleRecentPanel());
   document.getElementById("btn-save")?.addEventListener("click", () => saveFile());
   document.getElementById("btn-autosave")?.addEventListener("click", () => toggleAutoSave());
@@ -2556,6 +3111,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // Help menu items
   document.getElementById("btn-keyboard-shortcuts")?.addEventListener("click", toggleHelp);
+  document.getElementById("btn-customize-shortcuts")?.addEventListener("click", toggleShortcutsModal);
   document.getElementById("btn-check-updates")?.addEventListener("click", () => doUpdateCheck(true));
   document.getElementById("btn-about")?.addEventListener("click", () => {
     invoke("plugin:opener|open_url", { url: "https://github.com/vibery-studio/mx" });
@@ -2674,6 +3230,14 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("help-close")?.addEventListener("click", toggleHelp);
   document.getElementById("help-backdrop")?.addEventListener("click", toggleHelp);
 
+  // Shortcuts modal
+  document.getElementById("shortcuts-close")?.addEventListener("click", toggleShortcutsModal);
+  document.getElementById("shortcuts-backdrop")?.addEventListener("click", toggleShortcutsModal);
+  document.getElementById("shortcuts-reset")?.addEventListener("click", () => {
+    resetAllBindings();
+    renderShortcutsContent();
+  });
+
   // Divider drag
   initDividerDrag();
 
@@ -2688,13 +3252,45 @@ window.addEventListener("DOMContentLoaded", () => {
     openFile(event.payload);
   });
 
-  // Check for file passed on cold start, then session restore
-  invoke<string | null>("get_initial_file").then((path) => {
+  // Check for file passed on cold start, then restore tabs (main window only)
+  invoke<string | null>("get_initial_file").then(async (path) => {
     if (path) {
-      openFile(path);
-    } else {
-      const lastFile = localStorage.getItem("mx-last-file");
-      if (lastFile) openFile(lastFile);
+      await openFile(path);
+    } else if (isMainWindow) {
+      // Restore tabs from previous session
+      try {
+        const saved = JSON.parse(localStorage.getItem("mx-open-tabs") || "[]") as { filePath: string | null; isActive: boolean }[];
+        const fileTabs = saved.filter(t => t.filePath);
+        if (fileTabs.length > 0) {
+          let activeFilePath: string | null = null;
+          for (const t of fileTabs) {
+            if (t.isActive) activeFilePath = t.filePath;
+          }
+          // Open first tab (replaces the initial sample tab)
+          await openFile(fileTabs[0].filePath!);
+          // Remove the initial sample tab
+          const sampleTab = tabs.find(t => !t.filePath);
+          if (sampleTab) {
+            tabs = tabs.filter(t => t.id !== sampleTab.id);
+          }
+          // Open remaining tabs
+          for (let i = 1; i < fileTabs.length; i++) {
+            await openFile(fileTabs[i].filePath!);
+          }
+          // Switch to the previously active tab
+          if (activeFilePath) {
+            const active = tabs.find(t => t.filePath === activeFilePath);
+            if (active) switchToTab(active.id);
+          }
+          renderTabs();
+        } else {
+          const lastFile = localStorage.getItem("mx-last-file");
+          if (lastFile) openFile(lastFile);
+        }
+      } catch {
+        const lastFile = localStorage.getItem("mx-last-file");
+        if (lastFile) openFile(lastFile);
+      }
     }
   });
 
@@ -2711,13 +3307,8 @@ window.addEventListener("DOMContentLoaded", () => {
   // Image paste from clipboard
   editor.dom.addEventListener("paste", (e) => handleImagePaste(e as ClipboardEvent));
 
-  // Zen mode keyboard shortcut
-  document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") {
-      e.preventDefault();
-      toggleZenMode();
-    }
-  });
+  // Apply customizable keybindings (sets up global keydown handler from registry)
+  applyBindings();
 
   // Preview pane link clicks — same-file anchors, cross-file/folder .md links, external URLs
   $("#preview-pane")?.addEventListener("click", (e) => {

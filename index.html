@@ -23,6 +23,7 @@
               <div id="btn-new" class="dropdown-item">New File <span class="shortcut">⌘N</span></div>
               <div id="btn-open" class="dropdown-item">Open File <span class="shortcut">⌘O</span></div>
               <div id="btn-open-folder" class="dropdown-item">Open Folder</div>
+              <div id="btn-new-window" class="dropdown-item">New Window <span class="shortcut">⇧⌘N</span></div>
               <div id="btn-recent" class="dropdown-item">Recent Files</div>
               <div class="dropdown-divider"></div>
               <div id="btn-save" class="dropdown-item">Save <span class="shortcut">⌘S</span></div>
@@ -52,6 +53,7 @@
             <button id="btn-help-menu">Help <span class="arrow">▾</span></button>
             <div class="dropdown-menu hidden">
               <div id="btn-keyboard-shortcuts" class="dropdown-item">Keyboard Shortcuts <span class="shortcut">⌘/</span></div>
+              <div id="btn-customize-shortcuts" class="dropdown-item">Customize Shortcuts</div>
               <div class="dropdown-divider"></div>
               <div id="btn-check-updates" class="dropdown-item">Check for Updates…</div>
               <div id="btn-about" class="dropdown-item">About mx</div>
@@ -84,16 +86,7 @@
       <div id="recent-panel" class="hidden">
         <div id="recent-list"></div>
       </div>
-      <div id="format-bar">
-        <button class="fmt-btn" data-fmt="bold" title="Bold">B</button>
-        <button class="fmt-btn" data-fmt="italic" title="Italic"><i>I</i></button>
-        <button class="fmt-btn" data-fmt="heading" title="Heading">H</button>
-        <button class="fmt-btn" data-fmt="link" title="Link">&#128279;</button>
-        <button class="fmt-btn" data-fmt="code" title="Code">`</button>
-        <button class="fmt-btn" data-fmt="quote" title="Quote">&#10077;</button>
-        <button class="fmt-btn" data-fmt="list" title="List">&#8226;</button>
-        <button class="fmt-btn" data-fmt="hr" title="Horizontal Rule">&#8212;</button>
-      </div>
+      <div id="tab-bar"></div>
       <div id="breadcrumb" class="hidden"></div>
       <!-- Recovery banner -->
       <div id="recovery-banner" class="hidden">
@@ -127,7 +120,19 @@
           </div>
         </div>
         <div id="sidebar-resizer"></div>
-        <div id="editor-pane"></div>
+        <div id="editor-wrapper">
+          <div id="format-bar">
+            <button class="fmt-btn" data-fmt="bold" title="Bold">B</button>
+            <button class="fmt-btn" data-fmt="italic" title="Italic"><i>I</i></button>
+            <button class="fmt-btn" data-fmt="heading" title="Heading">H</button>
+            <button class="fmt-btn" data-fmt="link" title="Link">&#128279;</button>
+            <button class="fmt-btn" data-fmt="code" title="Code">`</button>
+            <button class="fmt-btn" data-fmt="quote" title="Quote">&#10077;</button>
+            <button class="fmt-btn" data-fmt="list" title="List">&#8226;</button>
+            <button class="fmt-btn" data-fmt="hr" title="Horizontal Rule">&#8212;</button>
+          </div>
+          <div id="editor-pane"></div>
+        </div>
         <div id="divider"></div>
         <div id="preview-pane"></div>
       </div>
@@ -181,6 +186,20 @@
             <button id="help-close">✕</button>
           </div>
           <div id="help-content"></div>
+        </div>
+      </div>
+      <!-- Shortcuts settings modal -->
+      <div id="shortcuts-modal" class="hidden">
+        <div id="shortcuts-backdrop"></div>
+        <div id="shortcuts-dialog">
+          <div id="shortcuts-header">
+            <span>Customize Shortcuts</span>
+            <div>
+              <button id="shortcuts-reset">Reset All</button>
+              <button id="shortcuts-close">✕</button>
+            </div>
+          </div>
+          <div id="shortcuts-content"></div>
         </div>
       </div>
       <!-- Image lightbox -->

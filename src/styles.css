@@ -244,30 +244,127 @@ body {
   color: var(--muted);
 }
 
-/* ── Format bar ── */
+/* ── Format bar (top of editor pane) ── */
+
+#editor-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
 
 #format-bar {
   display: flex;
   gap: 2px;
-  padding: 4px 12px;
+  padding: 3px 8px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 .fmt-btn {
   background: transparent;
   border: 1px solid transparent;
-  color: var(--text);
-  font-size: 13px;
-  padding: 2px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 2px 6px;
   border-radius: 4px;
   cursor: pointer;
   font-weight: 600;
+  font-family: var(--font-ui);
 }
 .fmt-btn:hover {
   background: var(--hover-bg);
   border-color: var(--border);
+  color: var(--text);
 }
 #app.zen-mode #format-bar { display: none !important; }
+
+/* ── Tab bar ── */
+
+#tab-bar {
+  display: flex;
+  align-items: stretch;
+  height: 33px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+#tab-bar:empty {
+  display: none;
+}
+
+#tab-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  gap: 6px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--muted);
+  cursor: pointer;
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+  max-width: 180px;
+  min-width: 60px;
+  position: relative;
+  flex-shrink: 0;
+  transition: background 0.1s;
+}
+
+.tab:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--bg);
+  color: var(--text);
+  border-bottom: 2px solid var(--accent);
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-modified {
+  color: var(--warning);
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tab-close {
+  font-size: 10px;
+  opacity: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: opacity 0.1s, background 0.1s;
+}
+
+.tab:hover .tab-close {
+  opacity: 0.6;
+}
+
+.tab-close:hover {
+  opacity: 1 !important;
+  background: var(--hover-bg);
+}
+
+#app.zen-mode #tab-bar { display: none !important; }
 
 /* ── Breadcrumb ── */
 
@@ -299,6 +396,7 @@ body {
   flex: 1;
   overflow: auto;
   min-width: 0;
+  min-height: 0;
 }
 
 #editor-pane .cm-editor {
@@ -1468,7 +1566,7 @@ body {
   display: none !important;
 }
 
-#app.zen-mode #editor-pane {
+#app.zen-mode #editor-wrapper {
   max-width: 720px;
   margin: 0 auto;
 }
@@ -1477,6 +1575,183 @@ body {
   max-width: 720px;
   margin: 0 auto;
 }
+
+/* ── Shortcuts settings modal ── */
+
+#shortcuts-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+}
+
+#shortcuts-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+}
+
+#shortcuts-dialog {
+  position: absolute;
+  top: 10%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 520px;
+  max-width: 90vw;
+  max-height: 75vh;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px var(--shadow);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+#shortcuts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+#shortcuts-header div {
+  display: flex;
+  gap: 6px;
+}
+
+#shortcuts-reset {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+#shortcuts-reset:hover { color: var(--error); border-color: var(--error); }
+
+#shortcuts-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+#shortcuts-close:hover { color: var(--text); background: var(--hover-bg); }
+
+#shortcuts-content {
+  overflow-y: auto;
+  padding: 8px 16px 16px;
+}
+
+.shortcut-group h3 {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin: 12px 0 4px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  gap: 8px;
+  transition: background 0.1s;
+}
+
+.shortcut-row:hover {
+  background: var(--hover-bg);
+}
+
+.shortcut-row.capturing {
+  background: var(--active-bg);
+  outline: 1px solid var(--accent);
+}
+
+.shortcut-label {
+  flex: 1;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.shortcut-key {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 32px;
+  text-align: center;
+}
+
+.shortcut-key.custom {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.shortcut-key.conflict {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.shortcut-edit {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s;
+}
+
+.shortcut-row:hover .shortcut-edit {
+  opacity: 1;
+}
+
+.shortcut-edit:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* Help customize link */
+.help-customize {
+  grid-column: 1 / -1;
+  text-align: center;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.help-customize button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.help-customize button:hover { background: var(--hover-bg); }
 
 /* ── Image lightbox ── */
 
@@ -1637,7 +1912,7 @@ body {
 /* ── Print ── */
 
 @media print {
-  #toolbar, #statusbar, #sidebar, #divider, #editor-pane {
+  #toolbar, #statusbar, #sidebar, #divider, #editor-wrapper {
     display: none !important;
   }
   #preview-pane {

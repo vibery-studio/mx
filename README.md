@@ -53,8 +53,9 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 
 ### Editor
 - **Live split preview** — markdown-it with syntax highlighting
+- **Multiple file tabs** — open multiple files in tabs, switch instantly with preserved undo history and scroll position
 - **Code folding** — collapse/expand blocks via gutter markers
-- **Formatting toolbar** — bold, italic, heading, link, code, quote, list, hr
+- **Formatting toolbar** — compact format bar above editor (bold, italic, heading, link, code, quote, list, hr)
 - **Search & replace** — Cmd+F / Cmd+H with regex support
 - **Line numbers** — toggleable, with active line highlight
 - **Selection count** — word/character count for selected text in status bar
@@ -96,11 +97,13 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 ### Customization
 - **Themes** — light, dark, and auto (system) with Catppuccin palette
 - **Font selection** — System, Inter, Georgia, Merriweather, JetBrains Mono
+- **Customizable keyboard shortcuts** — rebind any shortcut with conflict detection
 - **Custom preview CSS** — load your own styles from `~/.mx/preview.css`
 - **Resizable panes** — drag divider between editor and preview, resize sidebar
 - **Zoom** — Cmd+/- to scale editor and preview
 
 ### Platform
+- **Multiple windows** — open independent editor windows (Cmd+Shift+N)
 - **Word & character count** — real-time in status bar
 - **Auto-update** — checks for updates weekly, downloads in background
 - **File associations** — .md, .markdown, .yaml, .yml, .txt
@@ -123,6 +126,8 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 | `Cmd+Opt+F` | Content search (search inside all files) |
 | `Cmd+Shift+C` | Copy formatted HTML |
 | `Cmd+Shift+Z` | Zen mode |
+| `Cmd+Shift+N` | New window |
+| `Cmd+W` | Close tab |
 | `Cmd+=` / `Cmd+-` | Zoom in / out |
 
 ## Development

@@ -1,14 +1,15 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
 use wait_timeout::ChildExt;
 
 static INITIAL_FILE: Mutex<Option<String>> = Mutex::new(None);
-static FILE_WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
-static FOLDER_WATCHER: Mutex<Option<RecommendedWatcher>> = Mutex::new(None);
+static FILE_WATCHERS: Mutex<Option<HashMap<String, RecommendedWatcher>>> = Mutex::new(None);
+static FOLDER_WATCHERS: Mutex<Option<HashMap<String, RecommendedWatcher>>> = Mutex::new(None);
 
 #[derive(Serialize, Deserialize)]
 struct FileInfo {
@@ -819,10 +820,40 @@ fn load_custom_css() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let mut watcher_lock = FILE_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
+fn create_window(app: tauri::AppHandle, file_path: Option<String>) -> Result<(), String> {
+    let label = format!("mx-{}", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+    let label_clone = label.clone();
 
-    // Create a new watcher
+    tauri::WebviewWindowBuilder::new(
+        &app, &label, tauri::WebviewUrl::App("index.html".into())
+    )
+    .title("mx")
+    .inner_size(1200.0, 800.0)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    // If a file path was provided, emit open-file to the new window after it initializes
+    if let Some(path) = file_path {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if let Some(win) = handle.get_webview_window(&label_clone) {
+                let _ = win.emit("open-file", path);
+            }
+        });
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn watch_file(path: String, window: tauri::Window) -> Result<(), String> {
+    let mut watchers_lock = FILE_WATCHERS.lock().unwrap_or_else(|e| e.into_inner());
+    let watchers = watchers_lock.get_or_insert_with(HashMap::new);
+    let label = window.label().to_string();
+
+    // Create a new watcher that emits to this specific window
     let watched_path = PathBuf::from(&path);
     let watcher = RecommendedWatcher::new(
         move |res: Result<Event, notify::Error>| {
@@ -830,7 +861,7 @@ fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
                 Ok(event) => match event.kind {
                     EventKind::Modify(_) | EventKind::Create(_) => {
                         if event.paths.iter().any(|p| p == &watched_path) {
-                            let _ = app.emit("file-changed", watched_path.to_string_lossy().to_string());
+                            let _ = window.emit("file-changed", watched_path.to_string_lossy().to_string());
                         }
                     }
                     _ => {}
@@ -841,15 +872,15 @@ fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
         notify::Config::default(),
     ).map_err(|e| e.to_string())?;
 
-    // Drop old watcher safely (KqueueWatcher::drop can panic)
-    if let Some(old) = watcher_lock.take() {
+    // Drop old watcher for this window safely
+    if let Some(old) = watchers.remove(&label) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(old)));
     }
-    *watcher_lock = Some(watcher);
+    watchers.insert(label.clone(), watcher);
 
     // Watch the file's parent directory (more reliable than watching the file directly)
     if let Some(parent) = Path::new(&path).parent() {
-        watcher_lock.as_mut().unwrap()
+        watchers.get_mut(&label).unwrap()
             .watch(parent, RecursiveMode::NonRecursive)
             .map_err(|e| e.to_string())?;
     }
@@ -858,24 +889,28 @@ fn watch_file(path: String, app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn unwatch_file() -> Result<(), String> {
-    let mut watcher_lock = FILE_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(watcher) = watcher_lock.take() {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(watcher)));
+fn unwatch_file(window: tauri::Window) -> Result<(), String> {
+    let mut watchers_lock = FILE_WATCHERS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(watchers) = watchers_lock.as_mut() {
+        if let Some(watcher) = watchers.remove(window.label()) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(watcher)));
+        }
     }
     Ok(())
 }
 
 #[tauri::command]
-fn watch_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
-    let mut watcher_lock = FOLDER_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
+fn watch_folder(path: String, window: tauri::Window) -> Result<(), String> {
+    let mut watchers_lock = FOLDER_WATCHERS.lock().unwrap_or_else(|e| e.into_inner());
+    let watchers = watchers_lock.get_or_insert_with(HashMap::new);
+    let label = window.label().to_string();
 
     let watcher = RecommendedWatcher::new(
         move |res: Result<Event, notify::Error>| {
             match res {
                 Ok(event) => match event.kind {
                     EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-                        let _ = app.emit("folder-changed", ());
+                        let _ = window.emit("folder-changed", ());
                     }
                     _ => {}
                 },
@@ -885,12 +920,12 @@ fn watch_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
         notify::Config::default(),
     ).map_err(|e| e.to_string())?;
 
-    if let Some(old) = watcher_lock.take() {
+    if let Some(old) = watchers.remove(&label) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(old)));
     }
-    *watcher_lock = Some(watcher);
+    watchers.insert(label.clone(), watcher);
 
-    watcher_lock.as_mut().unwrap()
+    watchers.get_mut(&label).unwrap()
         .watch(Path::new(&path), RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
 
@@ -898,11 +933,12 @@ fn watch_folder(path: String, app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn unwatch_folder() -> Result<(), String> {
-    let mut watcher_lock = FOLDER_WATCHER.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(watcher) = watcher_lock.take() {
-        // KqueueWatcher::drop can panic if the event loop thread already exited
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(watcher)));
+fn unwatch_folder(window: tauri::Window) -> Result<(), String> {
+    let mut watchers_lock = FOLDER_WATCHERS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(watchers) = watchers_lock.as_mut() {
+        if let Some(watcher) = watchers.remove(window.label()) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(watcher)));
+        }
     }
     Ok(())
 }
@@ -918,7 +954,7 @@ pub fn run() {
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files, create_window])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
@@ -931,7 +967,13 @@ pub fn run() {
                     .collect();
                 if let Some(path) = files.first() {
                     *INITIAL_FILE.lock().unwrap() = Some(path.clone());
-                    let _ = _app.emit("open-file", path.clone());
+                    // Emit to focused window if available, otherwise broadcast
+                    let emitted = _app.webview_windows().values()
+                        .find(|w| w.is_focused().unwrap_or(false))
+                        .map(|w| w.emit("open-file", path.clone()));
+                    if emitted.is_none() {
+                        let _ = _app.emit("open-file", path.clone());
+                    }
                 }
             }
         });
