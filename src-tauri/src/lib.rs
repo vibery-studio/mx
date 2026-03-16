@@ -93,7 +93,9 @@ fn list_directory(path: String) -> Result<Vec<DirEntry>, String> {
 
 #[tauri::command]
 fn get_home_dir() -> Result<String, String> {
-    std::env::var("HOME").map_err(|e| e.to_string())
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -239,7 +241,9 @@ struct RecoveryInfo {
 }
 
 fn get_recovery_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|e| e.to_string())?;
     let dir = PathBuf::from(home).join(".mx").join("recovery");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
@@ -354,7 +358,15 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
     let tmp_dir = std::env::temp_dir().join("mx_export");
     let _ = fs::create_dir_all(&tmp_dir);
     let tmp_md = tmp_dir.join("export.md");
-    let path_env = "/Library/TeX/texbin:/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin";
+
+    // Build PATH: inherit system PATH and append known TeX locations
+    let sys_path = std::env::var("PATH").unwrap_or_default();
+    let path_env = if cfg!(target_os = "windows") {
+        // Windows: append common MiKTeX/TeX Live paths
+        format!("{};C:\\Program Files\\MiKTeX\\miktex\\bin\\x64;C:\\texlive\\2024\\bin\\windows;C:\\texlive\\2025\\bin\\windows", sys_path)
+    } else {
+        format!("{}:/Library/TeX/texbin:/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin", sys_path)
+    };
 
     // Step 1: Extract mermaid blocks, render to PNG via mermaid.ink API
     let mut processed = String::new();
@@ -391,7 +403,7 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
 
                 let download = Command::new("curl")
                     .args(["-sL", "--max-time", "30", "-o", png_file.to_str().unwrap(), &url])
-                    .env("PATH", path_env)
+                    .env("PATH", &path_env)
                     .output();
 
                 if let Ok(r) = download {
@@ -435,12 +447,26 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
     // Latin Modern = OpenType version of Computer Modern (default LaTeX font)
     // Falls back to Times New Roman if Latin Modern is not installed
     let lm_header = tmp_dir.join("fonts.tex");
-    let lm_font_dir = "/usr/local/texlive/2025basic/texmf-dist/fonts/opentype/public/lm/";
-    let use_latin_modern = Path::new(lm_font_dir).join("lmroman10-regular.otf").exists();
-    if use_latin_modern {
+    let lm_font_dirs: &[&str] = if cfg!(target_os = "windows") {
+        &[
+            "C:/texlive/2025/texmf-dist/fonts/opentype/public/lm/",
+            "C:/texlive/2024/texmf-dist/fonts/opentype/public/lm/",
+        ]
+    } else {
+        &[
+            "/usr/local/texlive/2025basic/texmf-dist/fonts/opentype/public/lm/",
+            "/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/lm/",
+            "/usr/local/texlive/2024/texmf-dist/fonts/opentype/public/lm/",
+        ]
+    };
+    let lm_font_dir = lm_font_dirs.iter()
+        .find(|d| Path::new(d).join("lmroman10-regular.otf").exists())
+        .copied();
+    let use_latin_modern = lm_font_dir.is_some();
+    if let Some(dir) = lm_font_dir {
         let header = format!(
             "\\setmainfont[Path={dir},BoldFont=lmroman10-bold.otf,ItalicFont=lmroman10-italic.otf,BoldItalicFont=lmroman10-bolditalic.otf]{{lmroman10-regular.otf}}\n\\setmonofont[Path={dir}]{{lmmono10-regular.otf}}\n",
-            dir = lm_font_dir
+            dir = dir
         );
         let _ = fs::write(&lm_header, header);
     }
@@ -468,11 +494,19 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
                 args.push("-H".to_string());
                 args.push(lm_header.to_str().unwrap().to_string());
             } else {
-                // Fallback: Times New Roman + SF NS Mono
+                // Fallback: Times New Roman + platform-appropriate mono font
                 args.extend_from_slice(&[
                     "-V".to_string(), "mainfont:Times New Roman".to_string(),
-                    "-V".to_string(), "monofont:.SF NS Mono".to_string(),
                 ]);
+                if cfg!(target_os = "macos") {
+                    args.extend_from_slice(&[
+                        "-V".to_string(), "monofont:.SF NS Mono".to_string(),
+                    ]);
+                } else {
+                    args.extend_from_slice(&[
+                        "-V".to_string(), "monofont:Consolas".to_string(),
+                    ]);
+                }
             }
         }
 
@@ -481,7 +515,7 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
 
         let mut child = Command::new("pandoc")
             .args(&args)
-            .env("PATH", path_env)
+            .env("PATH", &path_env)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::from(stderr_out))
@@ -810,7 +844,9 @@ fn replace_delimited<F: Fn(&str) -> String>(text: &str, open: &str, close: &str,
 
 #[tauri::command]
 fn load_custom_css() -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|e| e.to_string())?;
     let path = std::path::PathBuf::from(home).join(".mx").join("preview.css");
     if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| e.to_string())
