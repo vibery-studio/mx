@@ -520,7 +520,7 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::from(stderr_out))
             .spawn()
-            .map_err(|e| format!("Failed to run pandoc: {}", e))?;
+            .map_err(|e| format!("Pandoc not found. Install pandoc from pandoc.org. ({})", e))?;
 
         let timeout = std::time::Duration::from_secs(120);
         match child.wait_timeout(timeout) {
@@ -544,6 +544,74 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
 
     let _ = fs::remove_dir_all(&tmp_dir);
     Err(format!("pandoc failed: {}", last_err))
+}
+
+#[tauri::command]
+async fn export_docx(markdown_content: String, output_path: String) -> Result<String, String> {
+    use std::io::Write;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            use std::process::Command;
+
+            let tmp_dir = std::env::temp_dir().join("mx_export_docx");
+            let _ = fs::create_dir_all(&tmp_dir);
+            let tmp_md = tmp_dir.join("export.md");
+
+            let mut f = fs::File::create(&tmp_md).map_err(|e| e.to_string())?;
+            f.write_all(markdown_content.as_bytes()).map_err(|e| e.to_string())?;
+
+            let sys_path = std::env::var("PATH").unwrap_or_default();
+            let path_env = if cfg!(target_os = "windows") {
+                format!("{};C:\\Program Files\\MiKTeX\\miktex\\bin\\x64;C:\\texlive\\2024\\bin\\windows;C:\\texlive\\2025\\bin\\windows", sys_path)
+            } else {
+                format!("{}:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin", sys_path)
+            };
+
+            let stderr_file = tmp_dir.join("pandoc_stderr.log");
+            let stderr_out = fs::File::create(&stderr_file).map_err(|e| e.to_string())?;
+
+            let mut child = Command::new("pandoc")
+                .args([
+                    tmp_md.to_str().unwrap(),
+                    "-o", &output_path,
+                    "--from", "markdown",
+                    "--to", "docx",
+                ])
+                .env("PATH", &path_env)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::from(stderr_out))
+                .spawn()
+                .map_err(|e| format!("Failed to run pandoc: {}. Is pandoc installed?", e))?;
+
+            let timeout = std::time::Duration::from_secs(60);
+            match child.wait_timeout(timeout) {
+                Ok(Some(status)) if status.success() => {
+                    let _ = fs::remove_dir_all(&tmp_dir);
+                    Ok(output_path)
+                }
+                Ok(Some(_)) => {
+                    let err = fs::read_to_string(&stderr_file).unwrap_or_default();
+                    let _ = fs::remove_dir_all(&tmp_dir);
+                    Err(format!("pandoc failed: {}", err))
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = fs::remove_dir_all(&tmp_dir);
+                    Err("pandoc timed out".to_string())
+                }
+                Err(e) => {
+                    let _ = fs::remove_dir_all(&tmp_dir);
+                    Err(format!("pandoc error: {}", e))
+                }
+            }
+        })();
+        let _ = tx.send(result);
+    });
+    rx.recv().map_err(|e| format!("Thread error: {}", e))?
 }
 
 #[tauri::command]
@@ -988,9 +1056,22 @@ pub fn run() {
         .setup(|app| {
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+
+            // On Linux/Windows, file associations pass the path as a CLI arg
+            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+            {
+                let args: Vec<String> = std::env::args().collect();
+                if args.len() > 1 {
+                    let path = &args[1];
+                    if !path.starts_with('-') && Path::new(path).exists() {
+                        *INITIAL_FILE.lock().unwrap() = Some(path.clone());
+                    }
+                }
+            }
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files, create_window])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, export_docx, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files, create_window])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

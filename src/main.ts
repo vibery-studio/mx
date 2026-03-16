@@ -2672,21 +2672,15 @@ async function exportDOCX() {
   });
   if (!outputPath) return;
 
-  // Write temp md, run pandoc
-  const tmpPath = `/tmp/mx_export_${Date.now()}.md`;
   try {
-    await invoke("save_file", { path: tmpPath, content });
     flashStatus("Exporting DOCX...", "var(--accent)");
-    // Use export_pdf command pattern but for DOCX we need a different approach
-    // Since we don't have a dedicated Rust command, we'll use the HTML export + save approach
-    // Actually we can reuse pandoc via a shell command through the existing export mechanism
-    // For now, export as HTML first, then note this requires pandoc
-    const html = await invoke<string>("export_html", { markdownContent: content, theme: getEffectiveTheme() });
-    // Save HTML to temp, then we note that full DOCX needs pandoc installed
-    await invoke("save_file", { path: outputPath.replace(/\.docx$/, ".html"), content: html });
-    flashStatus("Saved as HTML (DOCX requires pandoc)", "var(--warning)", 4000);
+    await invoke<string>("export_docx", {
+      markdownContent: content,
+      outputPath,
+    });
+    flashStatus("DOCX exported!", "var(--success)", 3000);
   } catch (e) {
-    flashStatus(`Export failed: ${e}`, "var(--error)", 3000);
+    flashStatus(`Export failed: ${e}`, "var(--error)", 4000);
   }
 }
 
