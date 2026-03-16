@@ -1160,7 +1160,7 @@ body {
 
 /* ── Context menu ── */
 
-#context-menu {
+#context-menu, #tab-context-menu {
   position: fixed;
   z-index: 200;
   background: var(--bg);

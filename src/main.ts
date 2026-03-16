@@ -856,6 +856,10 @@ async function openFile(path: string, skipScrollRestore = false) {
     deleteRecoveryForCurrent(); // clean up stale recovery for this file
     renderTabs();
     persistOpenTabs();
+    updatePreview(editor.state.doc.toString());
+    updateWordCount(editor.state.doc.toString());
+    updateCursorPosition(editor);
+    startFileWatch(result.path);
     if (!skipScrollRestore) restoreScrollPosition(result.path);
   } catch (e) {
     console.error("Open failed:", e);
@@ -892,6 +896,7 @@ async function newFile() {
     setModified(false);
     renderTabs();
     persistOpenTabs();
+    updatePreview(editor.state.doc.toString());
   }
 }
 
@@ -2368,6 +2373,12 @@ function renderTabs() {
         closeTab(tabId);
       }
     });
+
+    // Right-click context menu
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showTabContextMenu((e as MouseEvent).clientX, (e as MouseEvent).clientY, tabId);
+    });
   });
 
   tabBar.querySelectorAll(".tab-close").forEach(el => {
@@ -2446,6 +2457,47 @@ async function closeTab(tabId: string) {
 
 function closeActiveTab() {
   if (activeTabId) closeTab(activeTabId);
+}
+
+// --- Tab context menu ---
+
+let tabContextTarget: string | null = null;
+
+function showTabContextMenu(x: number, y: number, tabId: string) {
+  const menu = document.getElementById("tab-context-menu");
+  if (!menu) return;
+  tabContextTarget = tabId;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.remove("hidden");
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    if (rect.bottom > window.innerHeight) menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+  });
+}
+
+function hideTabContextMenu() {
+  const menu = document.getElementById("tab-context-menu");
+  if (menu) menu.classList.add("hidden");
+  tabContextTarget = null;
+}
+
+async function closeOtherTabs(tabId: string) {
+  const toClose = tabs.filter(t => t.id !== tabId).map(t => t.id);
+  for (const id of toClose) await closeTab(id);
+}
+
+async function closeTabsToRight(tabId: string) {
+  const idx = tabs.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+  const toClose = tabs.slice(idx + 1).map(t => t.id);
+  for (const id of toClose) await closeTab(id);
+}
+
+async function closeAllTabs() {
+  const toClose = tabs.map(t => t.id);
+  for (const id of toClose) await closeTab(id);
 }
 
 function persistOpenTabs() {
@@ -3073,6 +3125,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("click", () => {
     document.querySelectorAll(".dropdown-menu").forEach(m => m.classList.add("hidden"));
     hideContextMenu();
+    hideTabContextMenu();
   });
 
   // File menu items
@@ -3208,6 +3261,24 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("ctx-copy-relative")?.addEventListener("click", ctxCopyRelativePath);
   document.getElementById("ctx-reveal")?.addEventListener("click", ctxReveal);
   document.getElementById("ctx-delete")?.addEventListener("click", ctxDelete);
+
+  // Tab context menu items
+  document.getElementById("tab-ctx-close")?.addEventListener("click", () => {
+    if (tabContextTarget) closeTab(tabContextTarget);
+    hideTabContextMenu();
+  });
+  document.getElementById("tab-ctx-close-others")?.addEventListener("click", () => {
+    if (tabContextTarget) closeOtherTabs(tabContextTarget);
+    hideTabContextMenu();
+  });
+  document.getElementById("tab-ctx-close-right")?.addEventListener("click", () => {
+    if (tabContextTarget) closeTabsToRight(tabContextTarget);
+    hideTabContextMenu();
+  });
+  document.getElementById("tab-ctx-close-all")?.addEventListener("click", () => {
+    closeAllTabs();
+    hideTabContextMenu();
+  });
 
   // Command palette
   document.getElementById("palette-input")?.addEventListener("input", (e) => {

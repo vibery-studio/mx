@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.1
+
+- Tab context menu: right-click tab for Close, Close Others, Close to the Right, Close All
+- Fix preview not rendering when opening a file from sidebar
+- Fix word count and cursor position not updating on file open
+
 ## 1.0.0
 
 - Multiple file tabs with preserved editor state (undo history, scroll position, selection)
