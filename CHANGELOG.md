@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.1.0
+
+### Git Sync (Google Drive-like)
+- One-click sync setup: paste a GitHub repo URL, auto-inits repo, sets remote, pushes
+- Auto-sync on save: commit + push to cloud automatically when enabled
+- Auto-pull on folder open: fetches latest changes from remote
+- HTTPS credential support via system git credential helpers (macOS Keychain, Windows Credential Manager, `gh auth`)
+- SSH agent + key file support
+- Non-blocking: all sync operations run in background without freezing the editor
+- Sync status in status bar: "✓ Synced", "3 unsaved", "Local only"
+
+### Git UI
+- Sidebar git status dots: colored indicators for modified (orange), new (green), deleted (red), staged (blue), conflict (purple)
+- Git panel in sidebar: branch name, changed files list, commit message input, sync button
+- File History modal: commits tab (git log) + snapshots tab (auto-saves), with View/Restore buttons
+- Side-by-side diff view for any version vs current
+- Context menu: File History, Discard Changes
+- Auto-sync toggle in File menu
+
+### Conflict Resolution
+- Side-by-side conflict resolver: Your version vs Incoming version
+- Three resolution options: Keep yours, Accept incoming, Keep both
+- Auto-opens when sync detects conflicts
+
+### Version History & Snapshots
+- Auto-snapshots every 60s when content changes (stored in ~/.mx/snapshots/, keeps last 50 per file)
+- Restore from any git commit or local snapshot
+- Diff view between any version and current content
+
+### Obsidian Compatibility
+- Callout blocks: `> [!type] title` with colored styling (supports: note, info, tip, success, warning, danger, question, bug, example, quote, abstract)
+- Interactive checklists: `- [ ]` / `- [x]` render as clickable checkboxes that toggle in source
+- Frontmatter tags: `tags:` rendered as styled pill labels with remove buttons
+
+### Export Improvements
+- PDF export: proper checklist rendering (□/⊠), callouts as styled blockquotes, table support
+- HTML export: callout CSS, tag styling, HTML pass-through
+- Pandoc task_lists + pipe_tables extensions enabled
+
+### Bug Fixes
+- Context menu New File/Folder now works when right-clicking files (uses parent directory)
+- Sidebar + and 📁 buttons create in the selected subfolder instead of always root
+- Fix stale preview content on file switch (Windows)
+- Folder watcher ignores .git directory changes (no spurious refreshes during git operations)
+- Fix context menu target nulled before use (File History, Discard Changes)
+
+## 1.0.3
+
+- Fix file open on Linux/Windows
+- Real DOCX export
+- Better PDF error messages
+
 ## 1.0.1
 
 - Tab context menu: right-click tab for Close, Close Others, Close to the Right, Close All

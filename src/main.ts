@@ -58,6 +58,17 @@ const AUTO_SAVE_DELAY = 3000;
 
 // Recovery state
 let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Git state
+interface GitFileStatus { path: string; status: string; }
+interface GitRepoInfo { is_repo: boolean; branch: string; remote_url: string | null; ahead: number; behind: number; }
+interface GitLogEntry { id: string; message: string; author: string; timestamp: number; }
+interface GitSyncResult { committed: boolean; pushed: boolean; pulled: boolean; message: string; conflicts: string[]; }
+
+let gitStatusMap: Map<string, string> = new Map();
+let gitRepoInfo: GitRepoInfo | null = null;
+let autoSyncEnabled = localStorage.getItem("mx-auto-sync") === "true";
+let gitRefreshDebounce: ReturnType<typeof setTimeout> | null = null;
 const RECOVERY_INTERVAL = 30000;
 
 // Line numbers state
@@ -75,6 +86,7 @@ let isScrollSyncing = false;
 
 // Context menu state
 let contextMenuTarget: { path: string; isDir: boolean; parentPath: string } | null = null;
+let activeSidebarDir: string | null = null; // last clicked/expanded directory in sidebar
 
 // --- Keybinding registry ---
 
@@ -426,6 +438,50 @@ md.inline.ruler.push("wikilink", (state, silent) => {
   return true;
 });
 
+// --- Obsidian-style callouts ---
+// Transforms blockquotes starting with [!type] into styled callout boxes
+
+const CALLOUT_ICONS: Record<string, string> = {
+  note: "📝", info: "ℹ️", tip: "💡", hint: "💡", important: "❗",
+  success: "✅", check: "✅", done: "✅", question: "❓", help: "❓",
+  warning: "⚠️", caution: "⚠️", attention: "⚠️",
+  danger: "🔴", failure: "❌", fail: "❌", error: "❌",
+  bug: "🐛", example: "📋", quote: "💬", cite: "💬", abstract: "📄",
+  summary: "📄", tldr: "📄",
+};
+
+function renderCallouts(html: string): string {
+  // markdown-it renders blockquotes as <blockquote>\n<p>[!type] title\ncontent</p>\n</blockquote>
+  // With breaks:true, newlines become <br>\n
+  return html.replace(
+    /<blockquote>\s*<p>\[!([\w-]+)\]\s*(.*?)(?:<br>|\n)([\s\S]*?)<\/p>([\s\S]*?)<\/blockquote>/g,
+    (_match, type: string, title: string, firstContent: string, rest: string) => {
+      const t = type.toLowerCase();
+      const icon = CALLOUT_ICONS[t] || "📌";
+      const displayTitle = title.trim() || type.charAt(0).toUpperCase() + type.slice(1);
+      const content = (firstContent + rest).trim();
+      return `<div class="callout callout-${t}"><div class="callout-title">${icon} ${displayTitle}</div><div class="callout-content"><p>${content}</p></div></div>`;
+    }
+  );
+}
+
+// --- Interactive checklists ---
+
+function renderChecklists(html: string): string {
+  let idx = 0;
+  return html.replace(
+    /<li>([\s\S]*?)<\/li>/g,
+    (_match, inner: string) => {
+      const checkedMatch = inner.match(/^\s*\[([ xX])\]\s*/);
+      if (!checkedMatch) return `<li>${inner}</li>`;
+      const checked = checkedMatch[1] !== " ";
+      const content = inner.replace(/^\s*\[[ xX]\]\s*/, "");
+      const id = idx++;
+      return `<li class="task-item"><input type="checkbox" class="task-check" data-idx="${id}" ${checked ? "checked" : ""} /><span>${content}</span></li>`;
+    }
+  );
+}
+
 function renderKaTeX(html: string): string {
   html = html.replace(/\$\$([\s\S]+?)\$\$/g, (_match, tex: string) => {
     try {
@@ -605,6 +661,15 @@ function renderFrontmatter(yaml: string): string {
   const entries = parseYamlFrontmatter(yaml);
   if (entries.length === 0) return "";
   const rows = entries.map(({ key, value }) => {
+    const lk = key.toLowerCase();
+    // Render tags/categories/keywords as styled labels
+    if ((lk === "tags" || lk === "tag" || lk === "categories" || lk === "keywords") && value) {
+      const tags = value.split(",").map(t => t.trim()).filter(Boolean);
+      const tagHtml = tags.map(t =>
+        `<span class="fm-tag" data-tag="${escapeHtml(t)}">${escapeHtml(t)}<button class="fm-tag-remove" data-tag="${escapeHtml(t)}">×</button></span>`
+      ).join("");
+      return `<div class="fm-row"><span class="fm-key">${escapeHtml(key)}</span><span class="fm-val fm-tags">${tagHtml}</span></div>`;
+    }
     const displayVal = value.length > 200 ? value.slice(0, 200) + "..." : value;
     return `<div class="fm-row"><span class="fm-key">${escapeHtml(key)}</span><span class="fm-val">${escapeHtml(displayVal)}</span></div>`;
   }).join("");
@@ -625,10 +690,52 @@ async function updatePreview(content: string) {
   let html = "";
   if (frontmatter) html += renderFrontmatter(frontmatter);
   html += md.render(body);
+  html = renderCallouts(html);
+  html = renderChecklists(html);
   html = renderKaTeX(html);
   html = processMermaidBlocks(html);
   previewPane.innerHTML = html;
   await renderMermaidDivs();
+  // Wire up interactive checklists
+  previewPane.querySelectorAll(".task-check").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const input = cb as HTMLInputElement;
+      const checked = input.checked;
+      // Find the nth checkbox in source and toggle it
+      const doc = editor.state.doc.toString();
+      let idx = 0;
+      const targetIdx = parseInt(input.dataset.idx || "0");
+      const regex = /- \[( |x|X)\]/g;
+      let match;
+      while ((match = regex.exec(doc)) !== null) {
+        if (idx === targetIdx) {
+          const from = match.index + 3;
+          const to = from + 1;
+          const replacement = checked ? "x" : " ";
+          editor.dispatch({ changes: { from, to, insert: replacement } });
+          break;
+        }
+        idx++;
+      }
+    });
+  });
+  // Wire up tag remove buttons
+  previewPane.querySelectorAll(".fm-tag-remove").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const tag = (btn as HTMLElement).dataset.tag;
+      if (!tag) return;
+      const doc = editor.state.doc.toString();
+      // Find and remove the tag line "  - tagname" in frontmatter
+      const tagLineRegex = new RegExp(`^([ \\t]+- ${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})\\s*$`, "m");
+      const match = tagLineRegex.exec(doc);
+      if (match) {
+        const from = match.index;
+        const to = from + match[0].length + 1; // +1 for newline
+        editor.dispatch({ changes: { from, to: Math.min(to, doc.length), insert: "" } });
+      }
+    });
+  });
 }
 
 // Scroll the preview pane to the element matching the given anchor fragment.
@@ -792,6 +899,7 @@ async function saveFile() {
       setModified(false);
       deleteRecoveryForCurrent();
       persistOpenTabs();
+      if (autoSyncEnabled && currentFolderPath) gitAutoSync(path);
     } catch (e) {
       console.error("Save failed:", e);
     }
@@ -803,6 +911,7 @@ async function saveFile() {
     setModified(false);
     deleteRecoveryForCurrent();
     persistOpenTabs();
+    if (autoSyncEnabled && currentFolderPath) gitAutoSync(currentFilePath);
     setTimeout(() => { fileWatchSuppressed = false; }, 1000);
   } catch (e) {
     fileWatchSuppressed = false;
@@ -856,8 +965,9 @@ async function openFile(path: string, skipScrollRestore = false) {
     deleteRecoveryForCurrent(); // clean up stale recovery for this file
     renderTabs();
     persistOpenTabs();
-    updatePreview(editor.state.doc.toString());
-    updateWordCount(editor.state.doc.toString());
+    // Use result.content directly to avoid stale editor state on Windows
+    updatePreview(result.content);
+    updateWordCount(result.content);
     updateCursorPosition(editor);
     startFileWatch(result.path);
     if (!skipScrollRestore) restoreScrollPosition(result.path);
@@ -924,6 +1034,536 @@ function scheduleAutoSave() {
       flashStatus("Auto-saved", "var(--success)");
     }
   }, AUTO_SAVE_DELAY);
+}
+
+// --- Git integration ---
+
+async function refreshGitStatus() {
+  if (!currentFolderPath) return;
+  try {
+    const info = await invoke<GitRepoInfo>("git_repo_info", { folderPath: currentFolderPath });
+    gitRepoInfo = info;
+    if (!info.is_repo) { gitStatusMap.clear(); updateGitUI(); return; }
+    const statuses = await invoke<GitFileStatus[]>("git_status", { folderPath: currentFolderPath });
+    gitStatusMap.clear();
+    for (const s of statuses) gitStatusMap.set(s.path, s.status);
+    updateGitUI();
+    updateTreeGitDots();
+  } catch { /* ignore non-git folders */ }
+}
+
+function debounceGitRefresh() {
+  if (gitRefreshDebounce) clearTimeout(gitRefreshDebounce);
+  gitRefreshDebounce = setTimeout(() => refreshGitStatus(), 500);
+}
+
+function updateTreeGitDots() {
+  if (!currentFolderPath) return;
+  const repoRoot = gitRepoInfo ? currentFolderPath : null;
+  if (!repoRoot) return;
+  document.querySelectorAll("#sidebar-tree .tree-item").forEach(el => {
+    const itemEl = el as HTMLElement;
+    const filePath = itemEl.dataset.path;
+    if (!filePath) return;
+    // Remove existing dot
+    itemEl.querySelector(".git-dot")?.remove();
+    // Compute relative path from folder root
+    const rel = filePath.startsWith(repoRoot + "/") ? filePath.slice(repoRoot.length + 1) : filePath;
+    const status = gitStatusMap.get(rel);
+    if (status) {
+      const dot = document.createElement("span");
+      dot.className = `git-dot git-${status}`;
+      itemEl.appendChild(dot);
+    }
+  });
+}
+
+function updateGitUI() {
+  // Status bar branch
+  const branchEl = document.getElementById("status-branch");
+  if (branchEl) {
+    if (gitRepoInfo?.is_repo) {
+      branchEl.classList.remove("hidden");
+      if (gitRepoInfo.remote_url) {
+        // Connected to remote — show sync status
+        if (gitRepoInfo.ahead > 0) {
+          branchEl.textContent = `⟳ ${gitRepoInfo.ahead} unsaved`;
+        } else {
+          branchEl.textContent = "✓ Synced";
+        }
+      } else {
+        branchEl.textContent = "Local only";
+      }
+    } else {
+      branchEl.classList.add("hidden");
+    }
+  }
+
+  // Git panel
+  const gitPanel = document.getElementById("git-panel");
+  const syncSetup = document.getElementById("sync-setup");
+  const syncStatus = document.getElementById("sync-status");
+  const changedFiles = document.getElementById("git-changed-files");
+  const commitArea = document.getElementById("git-commit-area");
+  const panelHeader = document.getElementById("git-panel-header");
+
+  if (gitPanel) {
+    if (!gitRepoInfo?.is_repo) {
+      // Not a repo — show setup prompt
+      if (syncSetup) syncSetup.classList.remove("hidden");
+      if (changedFiles) changedFiles.innerHTML = "";
+      if (commitArea) commitArea.style.display = "none";
+      if (panelHeader) panelHeader.style.display = "none";
+      if (syncStatus) syncStatus.textContent = "";
+    } else if (!gitRepoInfo.remote_url) {
+      // Repo but no remote — show setup
+      if (syncSetup) syncSetup.classList.remove("hidden");
+      if (commitArea) commitArea.style.display = "";
+      if (panelHeader) panelHeader.style.display = "none";
+      if (syncStatus) { syncStatus.textContent = "Not connected to cloud"; syncStatus.className = ""; }
+      populateChangedFiles(changedFiles);
+    } else {
+      // Connected — show full panel
+      if (syncSetup) syncSetup.classList.add("hidden");
+      if (commitArea) commitArea.style.display = "";
+      if (panelHeader) panelHeader.style.display = "";
+      const branchName = document.getElementById("git-branch-name");
+      if (branchName) branchName.textContent = gitRepoInfo.branch;
+      if (syncStatus) {
+        if (gitStatusMap.size === 0 && gitRepoInfo.ahead === 0) {
+          syncStatus.textContent = "✓ All synced";
+          syncStatus.className = "synced";
+        } else if (gitRepoInfo.ahead > 0) {
+          syncStatus.textContent = `${gitRepoInfo.ahead} changes waiting to sync`;
+          syncStatus.className = "";
+        } else {
+          syncStatus.textContent = `${gitStatusMap.size} unsaved changes`;
+          syncStatus.className = "";
+        }
+      }
+      populateChangedFiles(changedFiles);
+    }
+  }
+
+  // Auto-sync label
+  const syncLabel = document.getElementById("autosync-git-label");
+  if (syncLabel) syncLabel.textContent = autoSyncEnabled ? "On" : "Off";
+}
+
+function populateChangedFiles(container: HTMLElement | null) {
+  if (!container) return;
+  container.innerHTML = "";
+  gitStatusMap.forEach((status, path) => {
+    const item = document.createElement("div");
+    item.className = "git-file-item";
+    const dot = document.createElement("span");
+    dot.className = `git-dot git-${status}`;
+    const name = document.createElement("span");
+    name.className = "git-file-name";
+    name.textContent = path;
+    name.title = path;
+    item.appendChild(dot);
+    item.appendChild(name);
+    item.addEventListener("click", () => {
+      if (currentFolderPath) openFile(currentFolderPath + "/" + path);
+    });
+    container.appendChild(item);
+  });
+  if (gitStatusMap.size === 0) {
+    container.innerHTML = '<div class="git-empty">No changes</div>';
+  }
+}
+
+function toggleAutoSync() {
+  autoSyncEnabled = !autoSyncEnabled;
+  localStorage.setItem("mx-auto-sync", String(autoSyncEnabled));
+  updateGitUI();
+  flashStatus(`Auto-sync ${autoSyncEnabled ? "enabled" : "disabled"}`, "var(--accent)");
+}
+
+function gitAutoSync(filePath: string) {
+  if (!filePath || !currentFolderPath) return;
+  // Fire-and-forget — don't block the editor
+  invoke<GitSyncResult>("git_auto_sync", {
+    folderPath: currentFolderPath,
+    filePath: filePath,
+  }).then(result => {
+    if (result.conflicts.length > 0) {
+      flashStatus(`${result.conflicts.length} files need attention`, "var(--error)", 5000);
+      if (currentFolderPath) showConflictResolver(currentFolderPath + "/" + result.conflicts[0]);
+    } else if (result.pushed) {
+      flashStatus("✓ Synced", "var(--success)");
+    }
+    debounceGitRefresh();
+  }).catch(() => { /* silent — don't interrupt typing */ });
+}
+
+async function gitManualCommit() {
+  if (!currentFolderPath) return;
+  const input = document.getElementById("git-commit-input") as HTMLInputElement | null;
+  const userMsg = input?.value?.trim();
+  // Auto-generate message from changed files if empty
+  const message = userMsg || (() => {
+    const count = gitStatusMap.size;
+    if (count === 0) return "Update files";
+    if (count === 1) {
+      const [path, status] = [...gitStatusMap.entries()][0];
+      const name = path.split("/").pop() || path;
+      return status === "new" ? `Add ${name}` : `Update ${name}`;
+    }
+    return `Update ${count} files`;
+  })();
+  try {
+    await invoke<string>("git_commit", { folderPath: currentFolderPath, files: [], message });
+    if (input) input.value = "";
+    flashStatus("✓ Saved", "var(--success)");
+    // Push in background
+    invoke<string>("git_push", { folderPath: currentFolderPath })
+      .then(() => { flashStatus("✓ Synced", "var(--success)"); debounceGitRefresh(); })
+      .catch(() => debounceGitRefresh());
+  } catch (e) {
+    flashStatus(`Save failed: ${e}`, "var(--error)", 3000);
+  }
+}
+
+function gitSync() {
+  if (!currentFolderPath) return;
+  const folder = currentFolderPath;
+  flashStatus("Syncing...", "var(--accent)");
+  invoke<GitSyncResult>("git_pull", { folderPath: folder }).then(pullResult => {
+    if (pullResult.conflicts.length > 0) {
+      flashStatus(`${pullResult.conflicts.length} files need attention`, "var(--error)", 5000);
+      showConflictResolver(folder + "/" + pullResult.conflicts[0]);
+      debounceGitRefresh();
+      return;
+    }
+    invoke<string>("git_push", { folderPath: folder })
+      .then(() => flashStatus("✓ All synced", "var(--success)"))
+      .catch(() => flashStatus("✓ Up to date", "var(--success)"))
+      .finally(() => { debounceGitRefresh(); refreshSidebar(); });
+  }).catch(e => {
+    flashStatus(`Sync: ${e}`, "var(--error)", 3000);
+  });
+}
+
+function timeAgo(unixSec: number): string {
+  const diff = Math.floor(Date.now() / 1000) - unixSec;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(unixSec * 1000).toLocaleDateString();
+}
+
+function showSyncSetup() {
+  const modal = document.getElementById("sync-setup-modal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  // Check auth status
+  checkSyncAuth();
+}
+
+function hideSyncSetup() {
+  document.getElementById("sync-setup-modal")?.classList.add("hidden");
+}
+
+async function checkSyncAuth() {
+  const statusEl = document.getElementById("sync-auth-status");
+  if (!statusEl) return;
+  try {
+    const hasAuth = await invoke<boolean>("git_check_auth", { remoteUrl: "https://github.com" });
+    if (hasAuth) {
+      statusEl.textContent = "✓ GitHub connection found";
+      statusEl.className = "ok";
+    } else {
+      statusEl.textContent = "No GitHub credentials found. Run \"gh auth login\" in terminal, or add an SSH key.";
+      statusEl.className = "fail";
+    }
+  } catch {
+    statusEl.className = "";
+    statusEl.style.display = "none";
+  }
+}
+
+async function connectSync() {
+  if (!currentFolderPath) return;
+  const urlInput = document.getElementById("sync-repo-url") as HTMLInputElement;
+  const errorEl = document.getElementById("sync-setup-error");
+  const btn = document.getElementById("btn-sync-connect") as HTMLButtonElement;
+  let url = urlInput?.value?.trim();
+  if (!url) { if (errorEl) { errorEl.textContent = "Paste a repository URL"; errorEl.classList.remove("hidden"); } return; }
+
+  // Auto-fix common URL patterns
+  if (url.match(/^[\w-]+\/[\w.-]+$/) && !url.includes("://")) {
+    url = `https://github.com/${url}.git`; // "user/repo" → full URL
+  }
+  if (url.startsWith("https://github.com/") && !url.endsWith(".git")) {
+    url += ".git";
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = "Connecting..."; }
+  if (errorEl) errorEl.classList.add("hidden");
+
+  try {
+    const info = await invoke<GitRepoInfo>("git_setup_sync", { folderPath: currentFolderPath, remoteUrl: url });
+    gitRepoInfo = info;
+    autoSyncEnabled = true;
+    localStorage.setItem("mx-auto-sync", "true");
+    hideSyncSetup();
+    flashStatus("Sync connected!", "var(--success)");
+    debounceGitRefresh();
+  } catch (e) {
+    if (errorEl) {
+      errorEl.textContent = `${e}`;
+      errorEl.classList.remove("hidden");
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Connect & Sync"; }
+  }
+}
+
+// --- Conflict resolution (#98) ---
+
+interface GitConflictInfo { path: string; local_content: string; remote_content: string; base_content: string; }
+let conflictFilePath: string | null = null;
+
+async function showConflictResolver(filePath: string) {
+  if (!currentFolderPath) return;
+  conflictFilePath = filePath;
+  try {
+    const info = await invoke<GitConflictInfo>("git_conflict_info", { folderPath: currentFolderPath, filePath });
+    const modal = document.getElementById("conflict-modal");
+    const title = document.getElementById("conflict-title");
+    const localEl = document.getElementById("conflict-local");
+    const remoteEl = document.getElementById("conflict-remote");
+    if (!modal || !localEl || !remoteEl) return;
+    if (title) title.textContent = `Resolve: ${info.path}`;
+    localEl.textContent = info.local_content;
+    remoteEl.textContent = info.remote_content;
+    modal.classList.remove("hidden");
+  } catch (e) {
+    flashStatus(`${e}`, "var(--error)", 3000);
+  }
+}
+
+async function resolveConflict(choice: "local" | "remote" | "both") {
+  if (!conflictFilePath || !currentFolderPath) return;
+  const localEl = document.getElementById("conflict-local");
+  const remoteEl = document.getElementById("conflict-remote");
+  if (!localEl || !remoteEl) return;
+  let content: string;
+  if (choice === "local") content = localEl.textContent || "";
+  else if (choice === "remote") content = remoteEl.textContent || "";
+  else content = (localEl.textContent || "") + "\n" + (remoteEl.textContent || "");
+
+  try {
+    await invoke("git_resolve_conflict", { folderPath: currentFolderPath, filePath: conflictFilePath, content });
+    document.getElementById("conflict-modal")?.classList.add("hidden");
+    flashStatus("✓ Conflict resolved", "var(--success)");
+    // Reload file if open
+    if (currentFilePath === conflictFilePath) {
+      const info = await invoke<{ content: string }>("read_file", { path: conflictFilePath });
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: info.content } });
+      setModified(false);
+    }
+    debounceGitRefresh();
+  } catch (e) {
+    flashStatus(`Resolve failed: ${e}`, "var(--error)", 3000);
+  }
+}
+
+// --- Version history & snapshots (#111) ---
+
+interface SnapshotInfo { file_path: string; timestamp: number; snap_path: string; }
+let historyDiffFilePath: string | null = null;
+let snapshotTimer: ReturnType<typeof setTimeout> | null = null;
+const SNAPSHOT_INTERVAL = 60000; // auto-snapshot every 60s if changed
+let lastSnapshotContent: string = "";
+
+function scheduleSnapshot() {
+  if (snapshotTimer) clearTimeout(snapshotTimer);
+  snapshotTimer = setTimeout(() => {
+    if (!currentFilePath) return;
+    const content = editor.state.doc.toString();
+    if (content !== lastSnapshotContent && content.length > 0) {
+      lastSnapshotContent = content;
+      invoke("save_snapshot", { filePath: currentFilePath, content }).catch(() => {});
+    }
+  }, SNAPSHOT_INTERVAL);
+}
+
+async function showFileHistory() {
+  if (!currentFilePath || !currentFolderPath) return;
+  historyDiffFilePath = currentFilePath;
+  const modal = document.getElementById("history-modal");
+  const list = document.getElementById("history-list");
+  const diffView = document.getElementById("history-diff");
+  if (!modal || !list || !diffView) return;
+  list.classList.remove("hidden");
+  diffView.classList.add("hidden");
+  // Activate commits tab by default
+  document.getElementById("history-tab-commits")?.classList.add("active");
+  document.getElementById("history-tab-snapshots")?.classList.remove("active");
+  await loadHistoryCommits();
+  modal.classList.remove("hidden");
+}
+
+async function loadHistoryCommits() {
+  if (!historyDiffFilePath || !currentFolderPath) return;
+  const list = document.getElementById("history-list");
+  if (!list) return;
+  list.innerHTML = "";
+  try {
+    const entries = await invoke<GitLogEntry[]>("git_log", {
+      folderPath: currentFolderPath, filePath: historyDiffFilePath, limit: 50
+    });
+    if (entries.length === 0) {
+      list.innerHTML = '<div class="history-empty">No commits for this file</div>';
+      return;
+    }
+    for (const entry of entries) {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      const ago = timeAgo(entry.timestamp);
+      item.innerHTML = `<span class="history-actions"><button data-action="view" data-id="${entry.id}">View</button><button data-action="restore" data-id="${entry.id}">Restore</button></span><span class="history-sha">${entry.id}</span> <span class="history-msg">${escapeHtml(entry.message)}</span><br><span class="history-meta">${escapeHtml(entry.author)} · ${ago}</span>`;
+      item.querySelector('[data-action="view"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showHistoryDiff(entry.id, entry.message, "commit");
+      });
+      item.querySelector('[data-action="restore"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        restoreFromCommit(entry.id);
+      });
+      list.appendChild(item);
+    }
+  } catch (e) {
+    list.innerHTML = `<div class="history-empty">Error: ${e}</div>`;
+  }
+}
+
+async function loadHistorySnapshots() {
+  if (!historyDiffFilePath) return;
+  const list = document.getElementById("history-list");
+  if (!list) return;
+  list.innerHTML = "";
+  try {
+    const snaps = await invoke<SnapshotInfo[]>("list_snapshots", { filePath: historyDiffFilePath });
+    if (snaps.length === 0) {
+      list.innerHTML = '<div class="history-empty">No snapshots yet. Snapshots are saved automatically as you edit.</div>';
+      return;
+    }
+    for (const snap of snaps) {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      const ago = timeAgo(snap.timestamp);
+      const date = new Date(snap.timestamp * 1000).toLocaleString();
+      item.innerHTML = `<span class="history-actions"><button data-action="view">View</button><button data-action="restore">Restore</button></span><span class="history-sha">snapshot</span> <span class="history-msg">${date}</span><br><span class="history-meta">${ago}</span>`;
+      item.querySelector('[data-action="view"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        showSnapshotDiff(snap.snap_path, date);
+      });
+      item.querySelector('[data-action="restore"]')?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        restoreFromSnapshot(snap.snap_path);
+      });
+      list.appendChild(item);
+    }
+  } catch (e) {
+    list.innerHTML = `<div class="history-empty">Error: ${e}</div>`;
+  }
+}
+
+async function showHistoryDiff(commitId: string, label: string, _type: string) {
+  if (!historyDiffFilePath || !currentFolderPath) return;
+  try {
+    const oldContent = await invoke<string>("git_file_at_commit", {
+      folderPath: currentFolderPath, filePath: historyDiffFilePath, commitId
+    });
+    const newContent = editor.state.doc.toString();
+    displayHistoryDiff(oldContent, newContent, `${commitId} — ${label}`);
+  } catch (e) {
+    flashStatus(`${e}`, "var(--error)", 3000);
+  }
+}
+
+async function showSnapshotDiff(snapPath: string, label: string) {
+  try {
+    const oldContent = await invoke<string>("read_snapshot", { snapPath });
+    const newContent = editor.state.doc.toString();
+    displayHistoryDiff(oldContent, newContent, label);
+  } catch (e) {
+    flashStatus(`${e}`, "var(--error)", 3000);
+  }
+}
+
+function displayHistoryDiff(oldContent: string, newContent: string, title: string) {
+  const list = document.getElementById("history-list");
+  const diffView = document.getElementById("history-diff");
+  const diffTitle = document.getElementById("history-diff-title");
+  const diffOld = document.getElementById("history-diff-old");
+  const diffNew = document.getElementById("history-diff-new");
+  if (!list || !diffView || !diffOld || !diffNew) return;
+  list.classList.add("hidden");
+  diffView.classList.remove("hidden");
+  if (diffTitle) diffTitle.textContent = title;
+  diffOld.textContent = oldContent;
+  diffNew.textContent = newContent;
+}
+
+function hideHistoryDiff() {
+  document.getElementById("history-list")?.classList.remove("hidden");
+  document.getElementById("history-diff")?.classList.add("hidden");
+}
+
+async function restoreFromCommit(commitId: string) {
+  if (!historyDiffFilePath || !currentFolderPath) return;
+  try {
+    await invoke("git_restore_file", { folderPath: currentFolderPath, filePath: historyDiffFilePath, commitId });
+    if (currentFilePath === historyDiffFilePath) {
+      const info = await invoke<{ content: string }>("read_file", { path: historyDiffFilePath });
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: info.content } });
+      setModified(false);
+    }
+    flashStatus("✓ File restored", "var(--success)");
+    document.getElementById("history-modal")?.classList.add("hidden");
+    debounceGitRefresh();
+  } catch (e) {
+    flashStatus(`Restore failed: ${e}`, "var(--error)", 3000);
+  }
+}
+
+async function restoreFromSnapshot(snapPath: string) {
+  if (!historyDiffFilePath) return;
+  try {
+    const content = await invoke<string>("read_snapshot", { snapPath });
+    if (currentFilePath === historyDiffFilePath) {
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: content } });
+      setModified(true);
+    } else {
+      await invoke("save_file", { path: historyDiffFilePath, content });
+    }
+    flashStatus("✓ Snapshot restored", "var(--success)");
+    document.getElementById("history-modal")?.classList.add("hidden");
+  } catch (e) {
+    flashStatus(`Restore failed: ${e}`, "var(--error)", 3000);
+  }
+}
+
+async function gitDiscardFile(filePath: string) {
+  if (!currentFolderPath) return;
+  try {
+    await invoke("git_discard_file", { folderPath: currentFolderPath, filePath });
+    flashStatus("Discarded changes", "var(--success)");
+    // Reload the file if it's currently open
+    if (currentFilePath === filePath) {
+      const info = await invoke<{ content: string }>("read_file", { path: filePath });
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: info.content } });
+      setModified(false);
+    }
+    debounceGitRefresh();
+  } catch (e) {
+    flashStatus(`Discard: ${e}`, "var(--error)", 3000);
+  }
 }
 
 // --- Crash recovery ---
@@ -1100,6 +1740,7 @@ function onContentChange(view: EditorView) {
   updateCursorPosition(view);
   setModified(true);
   scheduleAutoSave();
+  scheduleSnapshot();
 }
 
 // --- Divider drag to resize ---
@@ -1363,10 +2004,38 @@ async function copyFormattedHTML() {
   }
 }
 
+function showPandocInstallGuide(format: string) {
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999";
+  const dialog = document.createElement("div");
+  dialog.style.cssText = "background:var(--bg-secondary,#313244);color:var(--fg,#cdd6f4);border-radius:12px;padding:24px 28px;max-width:420px;font-size:14px;line-height:1.6";
+  dialog.innerHTML = `
+    <h3 style="margin:0 0 12px;font-size:16px">${format} export requires Pandoc</h3>
+    <p style="margin:0 0 8px;opacity:0.8">Pandoc is a free document converter. Install it:</p>
+    <ul style="margin:0 0 16px;padding-left:20px;opacity:0.8">
+      <li><b>macOS:</b> brew install pandoc</li>
+      <li><b>Windows:</b> winget install pandoc</li>
+      <li><b>Linux:</b> sudo apt install pandoc</li>
+    </ul>
+    <p style="margin:0 0 16px;opacity:0.8">PDF also needs a TeX engine (e.g. <code style="background:rgba(255,255,255,0.1);padding:2px 5px;border-radius:3px">brew install basictex</code>)</p>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button id="pandoc-guide-dl" style="padding:6px 16px;border-radius:6px;border:none;background:var(--accent,#89b4fa);color:#1e1e2e;cursor:pointer;font-weight:600">Download Pandoc</button>
+      <button id="pandoc-guide-close" style="padding:6px 16px;border-radius:6px;border:1px solid rgba(255,255,255,0.2);background:transparent;color:inherit;cursor:pointer">Close</button>
+    </div>`;
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  dialog.querySelector("#pandoc-guide-close")!.addEventListener("click", () => overlay.remove());
+  dialog.querySelector("#pandoc-guide-dl")!.addEventListener("click", () => {
+    invoke("plugin:opener|open_url", { url: "https://pandoc.org/installing.html" });
+    overlay.remove();
+  });
+}
+
 // --- Export to PDF ---
 
 async function exportPDF() {
-  const content = editor.state.doc.toString();
+  const content = preprocessForPdfExport(editor.state.doc.toString());
 
   const defaultName = currentFilePath
     ? currentFilePath.replace(/\.md$/, ".pdf").split("/").pop()!
@@ -1420,8 +2089,11 @@ async function exportPDF() {
   }).catch((e) => {
     unlisten();
     console.error("PDF export failed:", e);
-    if (statusWords) {
-      statusWords.textContent = `PDF failed: ${e}`;
+    const err = String(e);
+    if (err.toLowerCase().includes("pandoc")) {
+      showPandocInstallGuide("PDF");
+    } else if (statusWords) {
+      statusWords.textContent = `PDF failed: ${err}`;
       statusWords.style.color = "var(--error)";
       setTimeout(() => {
         statusWords.textContent = prevText;
@@ -1463,6 +2135,7 @@ async function loadDirectory(path: string) {
     if (!tree) return;
     tree.innerHTML = "";
     await renderTreeEntries(entries, tree, 0);
+    debounceGitRefresh();
   } catch (e) {
     console.error("Failed to load directory:", e);
   }
@@ -1597,6 +2270,7 @@ async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, de
       if (!expandedDirs.has(entry.path)) childContainer.classList.add("hidden");
 
       item.addEventListener("click", async () => {
+        activeSidebarDir = entry.path;
         const isExpanded = expandedDirs.has(entry.path);
         if (isExpanded) {
           expandedDirs.delete(entry.path);
@@ -1626,6 +2300,7 @@ async function renderTreeEntries(entries: DirEntry[], container: HTMLElement, de
       }
     } else {
       item.addEventListener("click", () => {
+        activeSidebarDir = entry.path.substring(0, entry.path.lastIndexOf("/"));
         openFile(entry.path);
         document.querySelectorAll("#sidebar-tree .tree-item").forEach(el => el.classList.remove("active"));
         item.classList.add("active");
@@ -1661,13 +2336,22 @@ async function openFolder(folderPath?: string) {
   if (sidebar?.classList.contains("hidden")) {
     sidebar.classList.remove("hidden");
   }
+  // Pull before loading if auto-sync is on
+  if (autoSyncEnabled) {
+    try { await invoke("git_pull", { folderPath: path }); } catch { /* no remote or not a repo */ }
+  }
   loadDirectory(path);
   updateSidebarTitle(path);
   startFolderWatch(path);
 }
 
 function refreshSidebar() {
-  if (currentFolderPath) loadDirectory(currentFolderPath);
+  if (!currentFolderPath) return;
+  // Reset activeSidebarDir if it's outside the current folder
+  if (activeSidebarDir && !activeSidebarDir.startsWith(currentFolderPath)) {
+    activeSidebarDir = null;
+  }
+  loadDirectory(currentFolderPath);
 }
 
 // --- Context menu ---
@@ -1677,11 +2361,7 @@ function showContextMenu(x: number, y: number, target: { path: string; isDir: bo
   if (!menu) return;
   contextMenuTarget = target;
 
-  // Show/hide items based on target type
-  const newFileItem = document.getElementById("ctx-new-file");
-  const newFolderItem = document.getElementById("ctx-new-folder");
-  if (newFileItem) newFileItem.style.display = target.isDir ? "" : "none";
-  if (newFolderItem) newFolderItem.style.display = target.isDir ? "" : "none";
+  // Always show New File/Folder (for files, uses parent directory)
 
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
@@ -1702,8 +2382,8 @@ function hideContextMenu() {
 }
 
 async function ctxNewFile() {
-  if (!contextMenuTarget?.isDir) return;
-  const dir = contextMenuTarget.path;
+  if (!contextMenuTarget) return;
+  const dir = contextMenuTarget.isDir ? contextMenuTarget.path : contextMenuTarget.parentPath;
   hideContextMenu();
 
   const name = await showInputDialog("File name:", "untitled.md");
@@ -1719,8 +2399,8 @@ async function ctxNewFile() {
 }
 
 async function ctxNewFolder() {
-  if (!contextMenuTarget?.isDir) return;
-  const dir = contextMenuTarget.path;
+  if (!contextMenuTarget) return;
+  const dir = contextMenuTarget.isDir ? contextMenuTarget.path : contextMenuTarget.parentPath;
   hideContextMenu();
 
   const name = await showInputDialog("Folder name:");
@@ -2311,6 +2991,8 @@ function switchToTab(tabId: string) {
 
   // Restore editor state
   editor.setState(newTab.editorState);
+  // Get content from new tab state before any async operations
+  const tabContent = newTab.editorState.doc.toString();
 
   // Restore scroll positions after layout
   requestAnimationFrame(() => {
@@ -2329,8 +3011,8 @@ function switchToTab(tabId: string) {
 
   updateBreadcrumb();
   startFileWatch(newTab.filePath);
-  updatePreview(editor.state.doc.toString());
-  updateWordCount(editor.state.doc.toString());
+  updatePreview(tabContent);
+  updateWordCount(tabContent);
   updateCursorPosition(editor);
   renderTabs();
   persistOpenTabs();
@@ -2639,8 +3321,62 @@ async function ctxReveal() {
 
 // --- Export HTML (#34) ---
 
+/** Pre-process markdown for HTML export: convert callouts to HTML divs */
+function preprocessForHtmlExport(content: string): string {
+  let result = content;
+  // Convert callout blockquotes to HTML divs
+  result = result.replace(
+    /^(> \[!([\w-]+)\]\s*(.*)\n(?:> .*\n)*)/gm,
+    (_match, block: string, type: string, title: string) => {
+      const lines = block.split("\n").map((l: string) => l.replace(/^>\s?/, "")).filter((l: string) => l.trim());
+      lines.shift(); // remove [!type] line
+      const t = type.toLowerCase();
+      const icon = CALLOUT_ICONS[t] || "📌";
+      const displayTitle = title.trim() || type.charAt(0).toUpperCase() + type.slice(1);
+      const body = lines.join("<br>");
+      return `<div class="callout callout-${t}"><div class="callout-title">${icon} ${displayTitle}</div><div class="callout-content">${body}</div></div>\n`;
+    }
+  );
+  // Convert checklists to HTML checkboxes
+  result = result.replace(/^- \[x\] /gm, "- ☑ ");
+  result = result.replace(/^- \[ \] /gm, "- ☐ ");
+  // Convert frontmatter tags to styled spans
+  result = result.replace(/^---\n([\s\S]*?)\n---\n?/, (match, yaml: string) => {
+    const tagMatch = yaml.match(/^tags:\s*\n((?:\s+-\s+.*\n?)+)/m);
+    if (!tagMatch) return match;
+    const tags = tagMatch[1].split("\n").map(l => l.replace(/^\s+-\s+/, "").trim()).filter(Boolean);
+    const tagHtml = tags.map(t => `<span class="fm-tag">${t}</span>`).join(" ");
+    const cleanYaml = yaml.replace(/^tags:\s*\n(?:\s+-\s+.*\n?)+/m, `tags: ${tagHtml}`);
+    return `---\n${cleanYaml}\n---\n`;
+  });
+  return result;
+}
+
+/** Pre-process markdown for PDF export (Pandoc): convert to Pandoc-friendly markdown */
+function preprocessForPdfExport(content: string): string {
+  let result = content;
+  // Strip frontmatter
+  result = result.replace(/^---\n[\s\S]*?\n---\n?/, "");
+  // Convert callout blockquotes to styled blockquotes with bold title
+  result = result.replace(
+    /^(> \[!([\w-]+)\]\s*(.*)\n(?:> .*\n)*)/gm,
+    (_match, block: string, type: string, title: string) => {
+      const lines = block.split("\n").map((l: string) => l.replace(/^>\s?/, "")).filter((l: string) => l.trim());
+      lines.shift(); // remove [!type] line
+      const icon = CALLOUT_ICONS[type.toLowerCase()] || "📌";
+      const displayTitle = title.trim() || type.charAt(0).toUpperCase() + type.slice(1);
+      const bodyLines = lines.map(l => `> ${l}`).join("\n");
+      return `> **${icon} ${displayTitle}**\n>\n${bodyLines}\n\n`;
+    }
+  );
+  // Ensure blank line before lists (Pandoc needs this to recognize list start)
+  result = result.replace(/^([^\n-][^\n]*)\n(- \[[ xX]\])/gm, "$1\n\n$2");
+  result = result.replace(/^([^\n-][^\n]*)\n(- [^[[])/gm, "$1\n\n$2");
+  return result;
+}
+
 async function exportHTML() {
-  const content = editor.state.doc.toString();
+  const content = preprocessForHtmlExport(editor.state.doc.toString());
   const theme = getEffectiveTheme();
   try {
     const html = await invoke<string>("export_html", { markdownContent: content, theme });
@@ -2680,7 +3416,12 @@ async function exportDOCX() {
     });
     flashStatus("DOCX exported!", "var(--success)", 3000);
   } catch (e) {
-    flashStatus(`Export failed: ${e}`, "var(--error)", 4000);
+    const err = String(e);
+    if (err.toLowerCase().includes("pandoc")) {
+      showPandocInstallGuide("DOCX");
+    } else {
+      flashStatus(`Export failed: ${err}`, "var(--error)", 4000);
+    }
   }
 }
 
@@ -3130,6 +3871,7 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-recent")?.addEventListener("click", () => toggleRecentPanel());
   document.getElementById("btn-save")?.addEventListener("click", () => saveFile());
   document.getElementById("btn-autosave")?.addEventListener("click", () => toggleAutoSave());
+  document.getElementById("btn-autosync")?.addEventListener("click", () => toggleAutoSync());
   document.getElementById("btn-export-pdf")?.addEventListener("click", () => exportPDF());
   document.getElementById("btn-export-html")?.addEventListener("click", () => exportHTML());
   document.getElementById("btn-export-docx")?.addEventListener("click", () => exportDOCX());
@@ -3183,12 +3925,13 @@ window.addEventListener("DOMContentLoaded", () => {
       await openFolder();
       if (!currentFolderPath) return;
     }
+    const dir = activeSidebarDir || currentFolderPath;
     const name = await showInputDialog("File name:", "untitled.md");
     if (!name) return;
     try {
-      await invoke("create_file", { path: `${currentFolderPath}/${name}` });
+      await invoke("create_file", { path: `${dir}/${name}` });
       refreshSidebar();
-      openFile(`${currentFolderPath}/${name}`);
+      openFile(`${dir}/${name}`);
     } catch (e) {
       flashStatus(`Error: ${e}`, "var(--error)", 3000);
     }
@@ -3198,15 +3941,82 @@ window.addEventListener("DOMContentLoaded", () => {
       await openFolder();
       if (!currentFolderPath) return;
     }
+    const dir = activeSidebarDir || currentFolderPath;
     const name = await showInputDialog("Folder name:");
     if (!name) return;
-    invoke("create_directory", { path: `${currentFolderPath}/${name}` }).then(() => {
+    invoke("create_directory", { path: `${dir}/${name}` }).then(() => {
       refreshSidebar();
     }).catch(e => flashStatus(`Error: ${e}`, "var(--error)", 3000));
   });
   document.getElementById("btn-sidebar-refresh")?.addEventListener("click", () => refreshSidebar());
   document.getElementById("btn-sidebar-outline")?.addEventListener("click", () => toggleOutline());
   document.getElementById("btn-sidebar-close")?.addEventListener("click", () => toggleSidebar());
+
+  // Git panel
+  document.getElementById("btn-sidebar-git")?.addEventListener("click", () => {
+    const panel = document.getElementById("git-panel");
+    if (panel) panel.classList.toggle("hidden");
+  });
+  document.getElementById("btn-git-sync")?.addEventListener("click", () => gitSync());
+  document.getElementById("btn-git-commit")?.addEventListener("click", () => gitManualCommit());
+  document.getElementById("git-commit-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") gitManualCommit();
+  });
+
+  // Sync setup
+  document.getElementById("btn-sync-setup")?.addEventListener("click", () => showSyncSetup());
+  document.getElementById("btn-sync-connect")?.addEventListener("click", () => connectSync());
+  document.getElementById("sync-setup-close")?.addEventListener("click", () => hideSyncSetup());
+  document.getElementById("sync-setup-backdrop")?.addEventListener("click", () => hideSyncSetup());
+  document.getElementById("sync-repo-url")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") connectSync();
+  });
+  document.getElementById("sync-create-repo-link")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    invoke("plugin:opener|open_url", { url: "https://github.com/new" });
+  });
+
+  // History modal
+  document.getElementById("history-close")?.addEventListener("click", () => {
+    document.getElementById("history-modal")?.classList.add("hidden");
+  });
+  document.getElementById("history-backdrop")?.addEventListener("click", () => {
+    document.getElementById("history-modal")?.classList.add("hidden");
+  });
+  document.getElementById("history-tab-commits")?.addEventListener("click", () => {
+    document.getElementById("history-tab-commits")?.classList.add("active");
+    document.getElementById("history-tab-snapshots")?.classList.remove("active");
+    hideHistoryDiff();
+    loadHistoryCommits();
+  });
+  document.getElementById("history-tab-snapshots")?.addEventListener("click", () => {
+    document.getElementById("history-tab-snapshots")?.classList.add("active");
+    document.getElementById("history-tab-commits")?.classList.remove("active");
+    hideHistoryDiff();
+    loadHistorySnapshots();
+  });
+  document.getElementById("history-diff-back")?.addEventListener("click", () => hideHistoryDiff());
+  document.getElementById("history-diff-restore")?.addEventListener("click", () => {
+    // Restore from the currently viewed diff (old content)
+    const oldContent = document.getElementById("history-diff-old")?.textContent || "";
+    if (currentFilePath) {
+      editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: oldContent } });
+      setModified(true);
+      flashStatus("✓ Version restored", "var(--success)");
+      document.getElementById("history-modal")?.classList.add("hidden");
+    }
+  });
+
+  // Conflict resolution
+  document.getElementById("conflict-close")?.addEventListener("click", () => {
+    document.getElementById("conflict-modal")?.classList.add("hidden");
+  });
+  document.getElementById("conflict-backdrop")?.addEventListener("click", () => {
+    document.getElementById("conflict-modal")?.classList.add("hidden");
+  });
+  document.getElementById("conflict-accept-local")?.addEventListener("click", () => resolveConflict("local"));
+  document.getElementById("conflict-accept-remote")?.addEventListener("click", () => resolveConflict("remote"));
+  document.getElementById("conflict-accept-both")?.addEventListener("click", () => resolveConflict("both"));
 
   // Sidebar search button
   document.getElementById("btn-sidebar-search")?.addEventListener("click", () => {
@@ -3254,6 +4064,21 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("ctx-copy-absolute")?.addEventListener("click", ctxCopyAbsolutePath);
   document.getElementById("ctx-copy-relative")?.addEventListener("click", ctxCopyRelativePath);
   document.getElementById("ctx-reveal")?.addEventListener("click", ctxReveal);
+  document.getElementById("ctx-git-history")?.addEventListener("click", () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target && !target.isDir) {
+      currentFilePath = target.path;
+      showFileHistory();
+    }
+  });
+  document.getElementById("ctx-git-discard")?.addEventListener("click", () => {
+    const target = contextMenuTarget;
+    hideContextMenu();
+    if (target && !target.isDir) {
+      gitDiscardFile(target.path);
+    }
+  });
   document.getElementById("ctx-delete")?.addEventListener("click", ctxDelete);
 
   // Tab context menu items
@@ -3444,6 +4269,7 @@ window.addEventListener("DOMContentLoaded", () => {
   updateWordCount(SAMPLE_CONTENT);
   updateAutoSaveUI();
   updateLineNumbersUI();
+  updateGitUI();
 
   // Update theme label
   const themeLabel = document.getElementById("btn-theme-label");

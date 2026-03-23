@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 use notify::{Watcher, RecommendedWatcher, RecursiveMode, Event, EventKind};
 use wait_timeout::ChildExt;
+use git2::{Repository, StatusOptions, Signature, Cred, CredentialType};
 
 static INITIAL_FILE: Mutex<Option<String>> = Mutex::new(None);
 static FILE_WATCHERS: Mutex<Option<HashMap<String, RecommendedWatcher>>> = Mutex::new(None);
@@ -31,6 +32,53 @@ struct WordCount {
     chars: usize,
     words: usize,
     lines: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitFileStatus {
+    path: String,
+    status: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitRepoInfo {
+    is_repo: bool,
+    branch: String,
+    remote_url: Option<String>,
+    ahead: usize,
+    behind: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitLogEntry {
+    id: String,
+    message: String,
+    author: String,
+    timestamp: i64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitDiffResult {
+    old_content: String,
+    new_content: String,
+    patch: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitSyncResult {
+    committed: bool,
+    pushed: bool,
+    pulled: bool,
+    message: String,
+    conflicts: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GitConflictInfo {
+    path: String,
+    local_content: String,
+    remote_content: String,
+    base_content: String,
 }
 
 #[tauri::command]
@@ -481,6 +529,7 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
         let mut args = vec![
             tmp_md.to_str().unwrap().to_string(),
             "-o".to_string(), output_path.clone(),
+            "--from".to_string(), "markdown+task_lists+pipe_tables+strikeout".to_string(),
             "--pdf-engine".to_string(), engine.to_string(),
             "-V".to_string(), "geometry:margin=1in".to_string(),
             "-V".to_string(), "fontsize=11pt".to_string(),
@@ -748,6 +797,12 @@ fn export_html(markdown_content: String, theme: String) -> Result<String, String
         } else if trimmed.starts_with('>') {
             if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
             html_body.push_str(&format!("<blockquote>{}</blockquote>\n", inline_format(trimmed.trim_start_matches('>').trim())));
+        } else if trimmed.starts_with('<') {
+            // Pass through raw HTML (callouts, divs, etc.)
+            if in_paragraph { html_body.push_str("</p>\n"); in_paragraph = false; }
+            if in_list { html_body.push_str("</ul>\n"); in_list = false; }
+            html_body.push_str(trimmed);
+            html_body.push('\n');
         } else {
             if !in_paragraph { html_body.push_str("<p>"); in_paragraph = true; }
             else { html_body.push_str("<br>"); }
@@ -789,6 +844,16 @@ hr {{ border: none; border-top: 1px solid {border}; margin: 2em 0; }}
 ul {{ padding-left: 1.5em; }}
 li {{ margin: 0.25em 0; }}
 img {{ max-width: 100%; }}
+.callout {{ border-left: 3px solid {accent}; border-radius: 4px; padding: 10px 14px; margin: 12px 0; background: {code_bg}; }}
+.callout-title {{ font-weight: 600; font-size: 14px; margin-bottom: 4px; }}
+.callout-content {{ font-size: 13px; line-height: 1.6; }}
+.callout-content p {{ margin: 4px 0; }}
+.callout-success, .callout-check, .callout-done {{ border-left-color: #40a02b; }}
+.callout-warning, .callout-caution {{ border-left-color: #df8e1d; }}
+.callout-danger, .callout-failure, .callout-error {{ border-left-color: #d20f39; }}
+.callout-tip, .callout-hint {{ border-left-color: #40a02b; }}
+.callout-quote, .callout-cite {{ border-left-color: #8c8fa1; }}
+.fm-tag {{ display: inline-block; background: {code_bg}; color: {accent}; border: 1px solid {border}; border-radius: 12px; padding: 1px 8px; font-size: 0.85em; margin: 2px; }}
 </style>
 </head>
 <body>
@@ -1012,11 +1077,18 @@ fn watch_folder(path: String, window: tauri::Window) -> Result<(), String> {
     let watcher = RecommendedWatcher::new(
         move |res: Result<Event, notify::Error>| {
             match res {
-                Ok(event) => match event.kind {
-                    EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-                        let _ = window.emit("folder-changed", ());
+                Ok(event) => {
+                    // Ignore changes inside .git directory
+                    let dominated_by_git = event.paths.iter().any(|p| {
+                        p.components().any(|c| c.as_os_str() == ".git")
+                    });
+                    if dominated_by_git { return; }
+                    match event.kind {
+                        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+                            let _ = window.emit("folder-changed", ());
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 },
                 Err(e) => eprintln!("[mx] folder watcher error: {}", e),
             }
@@ -1047,6 +1119,707 @@ fn unwatch_folder(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+// --- Git integration ---
+
+/// Try system git credential helpers (works with macOS Keychain, Windows Credential Manager,
+/// gh auth, Git Credential Manager, etc.) for HTTPS URLs.
+fn try_git_credential_fill(url: &str) -> Option<(String, String)> {
+    let input = format!("protocol=https\nhost={}\n\n",
+        url.trim_start_matches("https://")
+           .trim_start_matches("http://")
+           .split('/').next().unwrap_or("github.com"));
+    let child = std::process::Command::new("git")
+        .args(["credential", "fill"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn().ok()?;
+    use std::io::Write;
+    let mut child = child;
+    child.stdin.take()?.write_all(input.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() { return None; }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut user = None;
+    let mut pass = None;
+    for line in stdout.lines() {
+        if let Some(v) = line.strip_prefix("username=") { user = Some(v.to_string()); }
+        if let Some(v) = line.strip_prefix("password=") { pass = Some(v.to_string()); }
+    }
+    match (user, pass) {
+        (Some(u), Some(p)) => Some((u, p)),
+        _ => None,
+    }
+}
+
+fn git_cred_callback(
+    url: &str,
+    username: Option<&str>,
+    allowed: CredentialType,
+) -> Result<Cred, git2::Error> {
+    let user = username.unwrap_or("git");
+
+    // 1. SSH credentials
+    if allowed.contains(CredentialType::SSH_KEY) {
+        if let Ok(cred) = Cred::ssh_key_from_agent(user) {
+            return Ok(cred);
+        }
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+        let ssh_dir = PathBuf::from(&home).join(".ssh");
+        for key_name in &["id_ed25519", "id_rsa"] {
+            let key_path = ssh_dir.join(key_name);
+            if key_path.exists() {
+                let pub_path = ssh_dir.join(format!("{}.pub", key_name));
+                let pub_key = if pub_path.exists() { Some(pub_path.as_path()) } else { None };
+                if let Ok(cred) = Cred::ssh_key(user, pub_key, &key_path, None) {
+                    return Ok(cred);
+                }
+            }
+        }
+    }
+
+    // 2. HTTPS credentials via system git credential helpers
+    if allowed.contains(CredentialType::USER_PASS_PLAINTEXT) {
+        if let Some((u, p)) = try_git_credential_fill(url) {
+            return Cred::userpass_plaintext(&u, &p);
+        }
+    }
+
+    // 3. Default (e.g. system-level)
+    if allowed.contains(CredentialType::DEFAULT) {
+        return Cred::default();
+    }
+    Err(git2::Error::from_str("Could not connect. Make sure you're signed in to GitHub (try: gh auth login or add an SSH key)."))
+}
+
+#[tauri::command]
+fn git_repo_info(folder_path: String) -> Result<GitRepoInfo, String> {
+    let repo = match Repository::discover(&folder_path) {
+        Ok(r) => r,
+        Err(_) => return Ok(GitRepoInfo {
+            is_repo: false,
+            branch: String::new(),
+            remote_url: None,
+            ahead: 0,
+            behind: 0,
+        }),
+    };
+    let branch = repo.head()
+        .ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_else(|| "HEAD".to_string());
+
+    let remote_url = repo.find_remote("origin")
+        .ok()
+        .and_then(|r| r.url().map(|u| u.to_string()));
+
+    let (ahead, behind) = (|| -> Result<(usize, usize), git2::Error> {
+        let head = repo.head()?.target().ok_or_else(|| git2::Error::from_str("no HEAD"))?;
+        let branch_name = repo.head()?.shorthand().unwrap_or("main").to_string();
+        let upstream_name = format!("refs/remotes/origin/{}", branch_name);
+        let upstream = repo.refname_to_id(&upstream_name)?;
+        Ok(repo.graph_ahead_behind(head, upstream)?)
+    })().unwrap_or((0, 0));
+
+    Ok(GitRepoInfo { is_repo: true, branch, remote_url, ahead, behind })
+}
+
+#[tauri::command]
+fn git_status(folder_path: String) -> Result<Vec<GitFileStatus>, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let mut opts = StatusOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false);
+    let statuses = repo.statuses(Some(&mut opts)).map_err(|e| e.to_string())?;
+    let mut result = Vec::new();
+    for entry in statuses.iter() {
+        let path = entry.path().unwrap_or("").to_string();
+        let s = entry.status();
+        let status = if s.contains(git2::Status::CONFLICTED) {
+            "conflict"
+        } else if s.contains(git2::Status::INDEX_NEW) || s.contains(git2::Status::INDEX_MODIFIED) || s.contains(git2::Status::INDEX_DELETED) {
+            if s.contains(git2::Status::WT_MODIFIED) { "staged_modified" } else { "staged" }
+        } else if s.contains(git2::Status::WT_NEW) {
+            "new"
+        } else if s.contains(git2::Status::WT_MODIFIED) {
+            "modified"
+        } else if s.contains(git2::Status::WT_DELETED) {
+            "deleted"
+        } else {
+            continue;
+        };
+        result.push(GitFileStatus { path, status: status.to_string() });
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn git_diff_file(folder_path: String, file_path: String) -> Result<GitDiffResult, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let rel_path = PathBuf::from(&file_path)
+        .strip_prefix(&workdir)
+        .unwrap_or(Path::new(&file_path))
+        .to_path_buf();
+
+    // Get old content from HEAD
+    let old_content = (|| -> Result<String, git2::Error> {
+        let head = repo.head()?.peel_to_tree()?;
+        let entry = head.get_path(&rel_path)?;
+        let blob = repo.find_blob(entry.id())?;
+        Ok(String::from_utf8_lossy(blob.content()).to_string())
+    })().unwrap_or_default();
+
+    // Get new content from workdir
+    let abs_path = workdir.join(&rel_path);
+    let new_content = fs::read_to_string(&abs_path).unwrap_or_default();
+
+    // Generate patch
+    let mut diff_opts = git2::DiffOptions::new();
+    diff_opts.pathspec(&rel_path);
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let diff = repo.diff_tree_to_workdir_with_index(
+        head_tree.as_ref(),
+        Some(&mut diff_opts),
+    ).map_err(|e| e.to_string())?;
+    let mut patch = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        let origin = line.origin();
+        if origin == '+' || origin == '-' || origin == ' ' {
+            patch.push(origin);
+        }
+        patch.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    }).map_err(|e| e.to_string())?;
+
+    Ok(GitDiffResult { old_content, new_content, patch })
+}
+
+#[tauri::command]
+fn git_log(folder_path: String, file_path: Option<String>, limit: usize) -> Result<Vec<GitLogEntry>, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let mut revwalk = repo.revwalk().map_err(|e| e.to_string())?;
+    revwalk.push_head().map_err(|e| e.to_string())?;
+    revwalk.set_sorting(git2::Sort::TIME).map_err(|e| e.to_string())?;
+
+    let rel_path = file_path.as_ref().map(|fp| {
+        let fp_path = PathBuf::from(fp);
+        fp_path.strip_prefix(&workdir)
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|_| PathBuf::from(fp))
+    });
+
+    let mut entries = Vec::new();
+    for oid in revwalk {
+        if entries.len() >= limit { break; }
+        let oid = oid.map_err(|e| e.to_string())?;
+        let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+
+        // Filter by file path if specified
+        if let Some(ref rp) = rel_path {
+            let dominated = (|| -> Result<bool, git2::Error> {
+                let tree = commit.tree()?;
+                let parent_tree = commit.parent(0).ok().and_then(|p| p.tree().ok());
+                let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+                Ok(diff.deltas().any(|d| {
+                    d.new_file().path() == Some(rp.as_path()) || d.old_file().path() == Some(rp.as_path())
+                }))
+            })().unwrap_or(false);
+            if !dominated { continue; }
+        }
+
+        let id = format!("{}", &oid.to_string()[..7]);
+        let message = commit.message().unwrap_or("").trim().to_string();
+        let author = commit.author().name().unwrap_or("").to_string();
+        let timestamp = commit.time().seconds();
+        entries.push(GitLogEntry { id, message, author, timestamp });
+    }
+    Ok(entries)
+}
+
+#[tauri::command]
+fn git_commit(folder_path: String, files: Vec<String>, message: String) -> Result<String, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+
+    if files.is_empty() {
+        // Stage all modified/new files
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .map_err(|e| e.to_string())?;
+    } else {
+        for file in &files {
+            let rel = PathBuf::from(file)
+                .strip_prefix(&workdir)
+                .unwrap_or(Path::new(file))
+                .to_path_buf();
+            index.add_path(&rel).map_err(|e| e.to_string())?;
+        }
+    }
+    index.write().map_err(|e| e.to_string())?;
+
+    let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let sig = repo.signature()
+        .or_else(|_| Signature::now("mx", "mx@localhost"))
+        .map_err(|e| e.to_string())?;
+    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    let parents: Vec<&git2::Commit> = parent.as_ref().map(|p| vec![p]).unwrap_or_default();
+
+    let oid = repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
+        .map_err(|e| e.to_string())?;
+    Ok(oid.to_string())
+}
+
+#[tauri::command]
+fn git_push(folder_path: String) -> Result<String, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let branch = repo.head().map_err(|e| e.to_string())?
+        .shorthand().unwrap_or("main").to_string();
+    let mut remote = repo.find_remote("origin").map_err(|e| e.to_string())?;
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(|url, username, allowed| git_cred_callback(url, username, allowed));
+    let mut push_opts = git2::PushOptions::new();
+    push_opts.remote_callbacks(callbacks);
+    let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
+    remote.push(&[&refspec], Some(&mut push_opts)).map_err(|e| e.to_string())?;
+    Ok(format!("Pushed to origin/{}", branch))
+}
+
+#[tauri::command]
+fn git_pull(folder_path: String) -> Result<GitSyncResult, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let branch_name = repo.head().ok()
+        .and_then(|h| h.shorthand().map(|s| s.to_string()))
+        .unwrap_or_else(|| "main".to_string());
+
+    // Fetch
+    let mut remote = repo.find_remote("origin").map_err(|e| e.to_string())?;
+    let mut callbacks = git2::RemoteCallbacks::new();
+    callbacks.credentials(|url, username, allowed| git_cred_callback(url, username, allowed));
+    let mut fetch_opts = git2::FetchOptions::new();
+    fetch_opts.remote_callbacks(callbacks);
+    remote.fetch(&[&branch_name], Some(&mut fetch_opts), None).map_err(|e| e.to_string())?;
+    drop(remote);
+
+    // Merge (fast-forward preferred)
+    let fetch_head = repo.find_reference("FETCH_HEAD").map_err(|e| e.to_string())?;
+    let fetch_commit = repo.reference_to_annotated_commit(&fetch_head).map_err(|e| e.to_string())?;
+    let (analysis, _) = repo.merge_analysis(&[&fetch_commit]).map_err(|e| e.to_string())?;
+
+    if analysis.is_up_to_date() {
+        return Ok(GitSyncResult {
+            committed: false, pushed: false, pulled: true,
+            message: "Already up to date".to_string(),
+            conflicts: vec![],
+        });
+    }
+
+    if analysis.is_fast_forward() {
+        let refname = format!("refs/heads/{}", branch_name);
+        let mut reference = repo.find_reference(&refname).map_err(|e| e.to_string())?;
+        reference.set_target(fetch_commit.id(), "fast-forward pull").map_err(|e| e.to_string())?;
+        repo.set_head(&refname).map_err(|e| e.to_string())?;
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
+            .map_err(|e| e.to_string())?;
+        return Ok(GitSyncResult {
+            committed: false, pushed: false, pulled: true,
+            message: "Fast-forward pull".to_string(),
+            conflicts: vec![],
+        });
+    }
+
+    // Normal merge
+    repo.merge(&[&fetch_commit], None, None).map_err(|e| e.to_string())?;
+    let index = repo.index().map_err(|e| e.to_string())?;
+    if index.has_conflicts() {
+        let conflicts: Vec<String> = index.conflicts().map_err(|e| e.to_string())?
+            .filter_map(|c| c.ok())
+            .filter_map(|c| c.our.map(|e| String::from_utf8_lossy(&e.path).to_string()))
+            .collect();
+        return Ok(GitSyncResult {
+            committed: false, pushed: false, pulled: true,
+            message: format!("Conflicts in {} files", conflicts.len()),
+            conflicts,
+        });
+    }
+
+    // Auto-commit the merge
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let sig = repo.signature()
+        .or_else(|_| Signature::now("mx", "mx@localhost"))
+        .map_err(|e| e.to_string())?;
+    let head_commit = repo.head().map_err(|e| e.to_string())?
+        .peel_to_commit().map_err(|e| e.to_string())?;
+    let fetch_commit_obj = repo.find_commit(fetch_commit.id()).map_err(|e| e.to_string())?;
+    repo.commit(Some("HEAD"), &sig, &sig, "Merge remote changes", &tree, &[&head_commit, &fetch_commit_obj])
+        .map_err(|e| e.to_string())?;
+    repo.cleanup_state().map_err(|e| e.to_string())?;
+
+    Ok(GitSyncResult {
+        committed: true, pushed: false, pulled: true,
+        message: "Merged remote changes".to_string(),
+        conflicts: vec![],
+    })
+}
+
+#[tauri::command]
+fn git_auto_sync(folder_path: String, file_path: String) -> Result<GitSyncResult, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let rel_path = PathBuf::from(&file_path)
+        .strip_prefix(&workdir)
+        .unwrap_or(Path::new(&file_path))
+        .to_path_buf();
+    let filename = rel_path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+
+    // Stage the file
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index.add_path(&rel_path).map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+
+    // Check if there are actually staged changes
+    let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+    let diff = repo.diff_tree_to_index(head_tree.as_ref(), Some(&index), None)
+        .map_err(|e| e.to_string())?;
+    if diff.deltas().count() == 0 {
+        return Ok(GitSyncResult {
+            committed: false, pushed: false, pulled: false,
+            message: "No changes to commit".to_string(),
+            conflicts: vec![],
+        });
+    }
+
+    // Commit
+    let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+    let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+    let sig = repo.signature()
+        .or_else(|_| Signature::now("mx", "mx@localhost"))
+        .map_err(|e| e.to_string())?;
+    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+    let parents: Vec<&git2::Commit> = parent.as_ref().map(|p| vec![p]).unwrap_or_default();
+    let message = format!("Update {}", filename);
+    repo.commit(Some("HEAD"), &sig, &sig, &message, &tree, &parents)
+        .map_err(|e| e.to_string())?;
+
+    // Try to push (non-fatal if fails)
+    let pushed = (|| -> Result<bool, String> {
+        let branch = repo.head().map_err(|e| e.to_string())?
+            .shorthand().unwrap_or("main").to_string();
+        let mut remote = repo.find_remote("origin").map_err(|e| e.to_string())?;
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(|url, username, allowed| git_cred_callback(url, username, allowed));
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(callbacks);
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
+        remote.push(&[&refspec], Some(&mut push_opts)).map_err(|e| e.to_string())?;
+        Ok(true)
+    })().unwrap_or(false);
+
+    let msg = if pushed {
+        format!("Synced: {}", message)
+    } else {
+        format!("Committed: {}", message)
+    };
+
+    Ok(GitSyncResult {
+        committed: true, pushed, pulled: false,
+        message: msg,
+        conflicts: vec![],
+    })
+}
+
+#[tauri::command]
+fn git_init(folder_path: String) -> Result<(), String> {
+    Repository::init(&folder_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// One-click sync setup: init repo if needed, set remote, create .gitignore, initial commit
+#[tauri::command]
+fn git_setup_sync(folder_path: String, remote_url: String) -> Result<GitRepoInfo, String> {
+    // Init if not a repo
+    let repo = match Repository::discover(&folder_path) {
+        Ok(r) => r,
+        Err(_) => Repository::init(&folder_path).map_err(|e| e.to_string())?,
+    };
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+
+    // Create .gitignore if it doesn't exist
+    let gitignore_path = workdir.join(".gitignore");
+    if !gitignore_path.exists() {
+        fs::write(&gitignore_path, ".DS_Store\nThumbs.db\nnode_modules/\n.mx/\n")
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Set or update remote
+    if let Ok(remote) = repo.find_remote("origin") {
+        let current_url = remote.url().unwrap_or("").to_string();
+        if current_url != remote_url {
+            drop(remote);
+            repo.remote_set_url("origin", &remote_url).map_err(|e| e.to_string())?;
+        }
+    } else {
+        repo.remote("origin", &remote_url).map_err(|e| e.to_string())?;
+    }
+
+    // Initial commit if repo is empty (no HEAD)
+    if repo.head().is_err() {
+        let mut index = repo.index().map_err(|e| e.to_string())?;
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+            .map_err(|e| e.to_string())?;
+        index.write().map_err(|e| e.to_string())?;
+        let tree_oid = index.write_tree().map_err(|e| e.to_string())?;
+        let tree = repo.find_tree(tree_oid).map_err(|e| e.to_string())?;
+        let sig = repo.signature()
+            .or_else(|_| Signature::now("mx", "mx@localhost"))
+            .map_err(|e| e.to_string())?;
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial sync", &tree, &[])
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Try initial push to set up tracking
+    let _ = (|| -> Result<(), String> {
+        let branch = repo.head().map_err(|e| e.to_string())?
+            .shorthand().unwrap_or("main").to_string();
+        let mut remote = repo.find_remote("origin").map_err(|e| e.to_string())?;
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(|url, username, allowed| git_cred_callback(url, username, allowed));
+        let mut push_opts = git2::PushOptions::new();
+        push_opts.remote_callbacks(callbacks);
+        let refspec = format!("refs/heads/{}:refs/heads/{}", branch, branch);
+        remote.push(&[&refspec], Some(&mut push_opts)).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+
+    // Return repo info
+    git_repo_info(folder_path)
+}
+
+/// Check if system has working git credentials for a URL
+#[tauri::command]
+fn git_check_auth(remote_url: String) -> Result<bool, String> {
+    // For SSH URLs, check if agent or key files exist
+    if remote_url.starts_with("git@") || remote_url.contains("ssh://") {
+        if Cred::ssh_key_from_agent("git").is_ok() { return Ok(true); }
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
+        let ssh_dir = PathBuf::from(&home).join(".ssh");
+        for key in &["id_ed25519", "id_rsa"] {
+            if ssh_dir.join(key).exists() { return Ok(true); }
+        }
+        return Ok(false);
+    }
+    // For HTTPS URLs, check system credential helper
+    Ok(try_git_credential_fill(&remote_url).is_some())
+}
+
+#[tauri::command]
+fn git_discard_file(folder_path: String, file_path: String) -> Result<(), String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let rel_path = PathBuf::from(&file_path)
+        .strip_prefix(&workdir)
+        .unwrap_or(Path::new(&file_path))
+        .to_path_buf();
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.path(&rel_path).force();
+    repo.checkout_head(Some(&mut checkout)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn git_stage_file(folder_path: String, file_path: String) -> Result<(), String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let rel_path = PathBuf::from(&file_path)
+        .strip_prefix(&workdir)
+        .unwrap_or(Path::new(&file_path))
+        .to_path_buf();
+    let mut index = repo.index().map_err(|e| e.to_string())?;
+    index.add_path(&rel_path).map_err(|e| e.to_string())?;
+    index.write().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Get content of a file at a specific commit
+#[tauri::command]
+fn git_file_at_commit(folder_path: String, file_path: String, commit_id: String) -> Result<String, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let rel_path = PathBuf::from(&file_path)
+        .strip_prefix(&workdir)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(&file_path));
+    let oid = git2::Oid::from_str(&commit_id).map_err(|e| e.to_string())?;
+    let commit = repo.find_commit(oid).map_err(|e| e.to_string())?;
+    let tree = commit.tree().map_err(|e| e.to_string())?;
+    let entry = tree.get_path(&rel_path).map_err(|_| "File not found in this version".to_string())?;
+    let blob = repo.find_blob(entry.id()).map_err(|e| e.to_string())?;
+    Ok(String::from_utf8_lossy(blob.content()).to_string())
+}
+
+/// Restore a file to its state at a specific commit
+#[tauri::command]
+fn git_restore_file(folder_path: String, file_path: String, commit_id: String) -> Result<(), String> {
+    let content = git_file_at_commit(folder_path, file_path.clone(), commit_id)?;
+    fs::write(&file_path, &content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Get conflict details for a file (local, remote, base content)
+#[tauri::command]
+fn git_conflict_info(folder_path: String, file_path: String) -> Result<GitConflictInfo, String> {
+    let repo = Repository::discover(&folder_path).map_err(|e| e.to_string())?;
+    let workdir = repo.workdir().ok_or("No workdir")?.to_path_buf();
+    let rel_path_str = PathBuf::from(&file_path)
+        .strip_prefix(&workdir)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| file_path.clone());
+    let index = repo.index().map_err(|e| e.to_string())?;
+
+    let mut base = String::new();
+    let mut local = String::new();
+    let mut remote = String::new();
+
+    for conflict in index.conflicts().map_err(|e| e.to_string())? {
+        let conflict = conflict.map_err(|e| e.to_string())?;
+        let conflict_path = conflict.our.as_ref()
+            .or(conflict.their.as_ref())
+            .or(conflict.ancestor.as_ref())
+            .map(|e| String::from_utf8_lossy(&e.path).to_string())
+            .unwrap_or_default();
+        if conflict_path != rel_path_str { continue; }
+
+        if let Some(entry) = conflict.ancestor {
+            if let Ok(blob) = repo.find_blob(entry.id) {
+                base = String::from_utf8_lossy(blob.content()).to_string();
+            }
+        }
+        if let Some(entry) = conflict.our {
+            if let Ok(blob) = repo.find_blob(entry.id) {
+                local = String::from_utf8_lossy(blob.content()).to_string();
+            }
+        }
+        if let Some(entry) = conflict.their {
+            if let Ok(blob) = repo.find_blob(entry.id) {
+                remote = String::from_utf8_lossy(blob.content()).to_string();
+            }
+        }
+        break;
+    }
+
+    // Fallback: if no index conflict entries, read workdir (may have conflict markers)
+    if local.is_empty() && remote.is_empty() {
+        let abs_path = workdir.join(&rel_path_str);
+        local = fs::read_to_string(&abs_path).unwrap_or_default();
+        remote = local.clone();
+    }
+
+    Ok(GitConflictInfo { path: rel_path_str, local_content: local, remote_content: remote, base_content: base })
+}
+
+/// Resolve a conflict by writing chosen content and staging the file
+#[tauri::command]
+fn git_resolve_conflict(folder_path: String, file_path: String, content: String) -> Result<(), String> {
+    fs::write(&file_path, &content).map_err(|e| e.to_string())?;
+    git_stage_file(folder_path, file_path)
+}
+
+/// Save a snapshot of a file to ~/.mx/snapshots/
+#[tauri::command]
+fn save_snapshot(file_path: String, content: String) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|e| e.to_string())?;
+    let snap_dir = PathBuf::from(&home).join(".mx").join("snapshots");
+    fs::create_dir_all(&snap_dir).map_err(|e| e.to_string())?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs();
+    let hash = format!("{:x}", md5_simple(&file_path));
+    let filename = format!("{}_{}.snap", hash, timestamp);
+    let snap_path = snap_dir.join(&filename);
+    let header = format!("---mx-snapshot---\n{}\n{}\n---\n", file_path, timestamp);
+    fs::write(&snap_path, format!("{}{}", header, content)).map_err(|e| e.to_string())?;
+
+    // Cleanup old snapshots for this file (keep last 50)
+    let prefix = format!("{}_", hash);
+    let mut snaps: Vec<_> = fs::read_dir(&snap_dir).map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .collect();
+    snaps.sort_by_key(|e| e.file_name());
+    if snaps.len() > 50 {
+        for old in &snaps[..snaps.len() - 50] {
+            let _ = fs::remove_file(old.path());
+        }
+    }
+    Ok(())
+}
+
+fn md5_simple(input: &str) -> u64 {
+    let mut hash: u64 = 0;
+    for b in input.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(b as u64);
+    }
+    hash
+}
+
+#[derive(Serialize, Deserialize)]
+struct SnapshotInfo {
+    file_path: String,
+    timestamp: u64,
+    snap_path: String,
+}
+
+/// List snapshots for a file
+#[tauri::command]
+fn list_snapshots(file_path: String) -> Result<Vec<SnapshotInfo>, String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|e| e.to_string())?;
+    let snap_dir = PathBuf::from(&home).join(".mx").join("snapshots");
+    if !snap_dir.exists() { return Ok(vec![]); }
+    let hash = format!("{:x}", md5_simple(&file_path));
+    let prefix = format!("{}_", hash);
+    let mut results: Vec<SnapshotInfo> = fs::read_dir(&snap_dir).map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let ts_str = name.strip_prefix(&prefix)?.strip_suffix(".snap")?;
+            let timestamp: u64 = ts_str.parse().ok()?;
+            Some(SnapshotInfo {
+                file_path: file_path.clone(),
+                timestamp,
+                snap_path: e.path().to_string_lossy().to_string(),
+            })
+        })
+        .collect();
+    results.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    Ok(results)
+}
+
+/// Read snapshot content
+#[tauri::command]
+fn read_snapshot(snap_path: String) -> Result<String, String> {
+    let raw = fs::read_to_string(&snap_path).map_err(|e| e.to_string())?;
+    // Skip the header (4 lines: marker, path, timestamp, ---)
+    let content = raw.splitn(2, "\n---\n").nth(1).unwrap_or(&raw);
+    Ok(content.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1071,7 +1844,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, export_docx, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files, create_window])
+        .invoke_handler(tauri::generate_handler![read_file, save_file, word_count, list_directory, get_home_dir, get_initial_file, export_pdf, export_docx, create_file, create_directory, delete_entry, rename_entry, list_files_recursive, save_recovery, get_recovery_files, read_recovery_content, delete_recovery, duplicate_entry, reveal_in_finder, export_html, load_custom_css, watch_file, unwatch_file, watch_folder, unwatch_folder, search_in_files, create_window, git_repo_info, git_status, git_diff_file, git_log, git_commit, git_push, git_pull, git_auto_sync, git_init, git_setup_sync, git_check_auth, git_discard_file, git_stage_file, git_file_at_commit, git_restore_file, git_conflict_info, git_resolve_conflict, save_snapshot, list_snapshots, read_snapshot])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {

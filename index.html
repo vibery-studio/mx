@@ -28,6 +28,7 @@
               <div class="dropdown-divider"></div>
               <div id="btn-save" class="dropdown-item">Save <span class="shortcut">⌘S</span></div>
               <div id="btn-autosave" class="dropdown-item">Auto-save: <span id="autosave-label">Off</span></div>
+              <div id="btn-autosync" class="dropdown-item">Auto-sync: <span id="autosync-git-label">Off</span></div>
               <div class="dropdown-divider"></div>
               <div id="btn-export-pdf" class="dropdown-item">Export PDF</div>
               <div id="btn-export-html" class="dropdown-item">Export HTML</div>
@@ -103,6 +104,7 @@
               <button id="btn-sidebar-refresh" title="Refresh file list">↻</button>
               <button id="btn-sidebar-new-file" title="New File">+</button>
               <button id="btn-sidebar-new-folder" title="New Folder">📁</button>
+              <button id="btn-sidebar-git" title="Toggle Git Panel">⎇</button>
               <button id="btn-sidebar-outline" title="Toggle Outline">¶</button>
               <button id="btn-sidebar-close" title="Close Sidebar (⌘B)">✕</button>
             </div>
@@ -117,6 +119,23 @@
               <span>Outline</span>
             </div>
             <div id="outline-list"></div>
+          </div>
+          <div id="git-panel" class="hidden">
+            <div id="git-panel-header">
+              <span id="git-branch-name">main</span>
+              <button id="btn-git-sync" title="Sync now">⟳</button>
+            </div>
+            <div id="sync-status"></div>
+            <div id="git-changed-files"></div>
+            <div id="git-commit-area">
+              <input id="git-commit-input" type="text" placeholder="Describe your changes…" autocomplete="off" />
+              <button id="btn-git-commit">Save</button>
+            </div>
+            <!-- Shown when folder has no sync set up -->
+            <div id="sync-setup" class="hidden">
+              <div class="sync-setup-msg">Sync your files to the cloud so you never lose them.</div>
+              <button id="btn-sync-setup">Set up Sync</button>
+            </div>
           </div>
         </div>
         <div id="sidebar-resizer"></div>
@@ -158,6 +177,9 @@
         </div>
         <div id="ctx-reveal" class="ctx-item">Reveal in Finder</div>
         <div class="ctx-divider"></div>
+        <div id="ctx-git-history" class="ctx-item">File History</div>
+        <div id="ctx-git-discard" class="ctx-item ctx-danger">Discard Changes</div>
+        <div class="ctx-divider"></div>
         <div id="ctx-delete" class="ctx-item ctx-danger">Delete</div>
       </div>
       <!-- Command palette -->
@@ -177,6 +199,7 @@
         </div>
       </div>
       <div id="statusbar">
+        <span id="status-branch" class="hidden">⎇ main</span>
         <span id="status-position">Ln 1, Col 1</span>
         <span id="status-selection"></span>
         <span id="status-words">0 words</span>
@@ -207,6 +230,86 @@
             </div>
           </div>
           <div id="shortcuts-content"></div>
+        </div>
+      </div>
+      <!-- Sync setup dialog -->
+      <div id="sync-setup-modal" class="hidden">
+        <div id="sync-setup-backdrop"></div>
+        <div id="sync-setup-dialog">
+          <div id="sync-setup-header">
+            <span>Set up Sync</span>
+            <button id="sync-setup-close">✕</button>
+          </div>
+          <div id="sync-setup-body">
+            <p>Connect to a GitHub repository to sync your files across devices.</p>
+            <div id="sync-auth-status"></div>
+            <label for="sync-repo-url">Repository URL</label>
+            <input id="sync-repo-url" type="text" placeholder="https://github.com/you/my-notes.git" autocomplete="off" />
+            <div class="sync-setup-hint">Create a <a id="sync-create-repo-link" href="#">new private repo on GitHub</a>, then paste the URL here.</div>
+            <div id="sync-setup-error" class="hidden"></div>
+            <button id="btn-sync-connect">Connect & Sync</button>
+          </div>
+        </div>
+      </div>
+      <!-- Conflict resolution modal -->
+      <div id="conflict-modal" class="hidden">
+        <div id="conflict-backdrop"></div>
+        <div id="conflict-dialog">
+          <div id="conflict-header">
+            <span id="conflict-title">Resolve conflict</span>
+            <button id="conflict-close">✕</button>
+          </div>
+          <div id="conflict-body">
+            <div id="conflict-panels">
+              <div class="conflict-panel">
+                <div class="conflict-panel-label">Your version</div>
+                <pre id="conflict-local"></pre>
+              </div>
+              <div class="conflict-panel">
+                <div class="conflict-panel-label">Incoming version</div>
+                <pre id="conflict-remote"></pre>
+              </div>
+            </div>
+            <div id="conflict-actions">
+              <button id="conflict-accept-local">Keep yours</button>
+              <button id="conflict-accept-remote">Accept incoming</button>
+              <button id="conflict-accept-both">Keep both</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- File history modal -->
+      <div id="history-modal" class="hidden">
+        <div id="history-backdrop"></div>
+        <div id="history-dialog">
+          <div id="history-header">
+            <span>File History</span>
+            <div id="history-tabs">
+              <button id="history-tab-commits" class="history-tab active">Commits</button>
+              <button id="history-tab-snapshots" class="history-tab">Snapshots</button>
+            </div>
+            <button id="history-close">✕</button>
+          </div>
+          <div id="history-list"></div>
+          <div id="history-diff" class="hidden">
+            <div id="history-diff-header">
+              <span id="history-diff-title"></span>
+              <div>
+                <button id="history-diff-restore">Restore this version</button>
+                <button id="history-diff-back">← Back</button>
+              </div>
+            </div>
+            <div id="history-diff-panels">
+              <div class="conflict-panel">
+                <div class="conflict-panel-label">Selected version</div>
+                <pre id="history-diff-old"></pre>
+              </div>
+              <div class="conflict-panel">
+                <div class="conflict-panel-label">Current</div>
+                <pre id="history-diff-new"></pre>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <!-- Image lightbox -->

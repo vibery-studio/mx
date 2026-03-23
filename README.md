@@ -38,6 +38,8 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 | Mermaid diagrams | Yes | No |
 | KaTeX math | Yes | MathJax (slow) |
 | YAML frontmatter | Rendered | Raw text |
+| Git sync (auto save to cloud) | Yes | No |
+| Obsidian callouts & checklists | Yes | No |
 | Footnotes / Wikilinks | Yes | No |
 | Code folding | Yes | No |
 | File sidebar + search | Yes | No |
@@ -80,9 +82,25 @@ Working with AI means opening dozens of markdown files every day. You need a fas
 - **Drag & drop** — drop any .md, .yaml, .json, .txt file or folder to open
 - **Recent files** — quick access to recently opened files
 
+### Git Sync
+- **One-click sync setup** — paste a GitHub repo URL, auto-connects and syncs
+- **Auto-sync on save** — commit + push to cloud automatically (toggle in File menu)
+- **Auto-pull on open** — fetches latest changes when opening a folder
+- **Conflict resolution** — side-by-side diff with Keep yours / Accept incoming / Keep both
+- **File history** — view commit log and local snapshots per file, restore any version
+- **Status indicators** — colored dots in sidebar (modified, new, deleted, staged, conflict)
+- **Works with any auth** — macOS Keychain, Windows Credential Manager, `gh auth`, SSH keys
+
+### Obsidian Compatibility
+- **Callout blocks** — `> [!tip]`, `> [!warning]`, `> [!danger]`, etc. with colored styling and icons
+- **Interactive checklists** — `- [ ]` / `- [x]` render as clickable checkboxes that toggle in source
+- **Tag labels** — frontmatter `tags:` rendered as styled pills with remove buttons
+- **Wikilinks** — `[[page name]]` renders as clickable links
+
 ### Writing
 - **Auto-save** — configurable, saves after 3s of inactivity
 - **Crash recovery** — periodic recovery snapshots for unsaved work
+- **Version snapshots** — auto-saves every 60s, restore from any snapshot
 - **External change detection** — auto-reloads when file changes on disk, prompts if you have unsaved edits
 - **Zen mode** — Cmd+Shift+Z, hides all chrome for distraction-free writing
 - **Image paste** — paste images from clipboard directly into editor
