@@ -2090,10 +2090,10 @@ async function exportPDF() {
     unlisten();
     console.error("PDF export failed:", e);
     const err = String(e);
-    if (err.toLowerCase().includes("pandoc")) {
+    if (err.toLowerCase().includes("pandoc not found")) {
       showPandocInstallGuide("PDF");
     } else if (statusWords) {
-      statusWords.textContent = `PDF failed: ${err}`;
+      statusWords.textContent = `PDF failed: ${err.length > 200 ? err.slice(0, 200) + "…" : err}`;
       statusWords.style.color = "var(--error)";
       setTimeout(() => {
         statusWords.textContent = prevText;
@@ -3417,7 +3417,7 @@ async function exportDOCX() {
     flashStatus("DOCX exported!", "var(--success)", 3000);
   } catch (e) {
     const err = String(e);
-    if (err.toLowerCase().includes("pandoc")) {
+    if (err.toLowerCase().includes("pandoc") && (err.toLowerCase().includes("not found") || err.toLowerCase().includes("not installed") || err.toLowerCase().includes("is pandoc installed"))) {
       showPandocInstallGuide("DOCX");
     } else {
       flashStatus(`Export failed: ${err}`, "var(--error)", 4000);

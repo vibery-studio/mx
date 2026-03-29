@@ -407,13 +407,30 @@ fn export_pdf_blocking(markdown_content: String, output_path: String, app: tauri
     let _ = fs::create_dir_all(&tmp_dir);
     let tmp_md = tmp_dir.join("export.md");
 
-    // Build PATH: inherit system PATH and append known TeX locations
+    // Build PATH: inherit system PATH and append known Pandoc + TeX locations
     let sys_path = std::env::var("PATH").unwrap_or_default();
     let path_env = if cfg!(target_os = "windows") {
-        // Windows: append common MiKTeX/TeX Live paths
-        format!("{};C:\\Program Files\\MiKTeX\\miktex\\bin\\x64;C:\\texlive\\2024\\bin\\windows;C:\\texlive\\2025\\bin\\windows", sys_path)
+        // Windows: append common Pandoc, MiKTeX, and TeX Live paths
+        let mut extra = format!(
+            "{};C:\\Program Files\\Pandoc;C:\\Program Files\\MiKTeX\\miktex\\bin\\x64;C:\\texlive\\2024\\bin\\windows;C:\\texlive\\2025\\bin\\windows",
+            sys_path
+        );
+        // Also check %LOCALAPPDATA%\Pandoc (user-level MSI install)
+        if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+            extra = format!("{};{}\\Pandoc", extra, local_app);
+        }
+        extra
     } else {
-        format!("{}:/Library/TeX/texbin:/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin", sys_path)
+        // macOS/Linux: add Homebrew (Apple Silicon + Intel), TeX, and common bin paths
+        let mut extra = format!(
+            "{}:/opt/homebrew/bin:/Library/TeX/texbin:/opt/anaconda3/bin:/usr/local/bin:/usr/bin:/bin",
+            sys_path
+        );
+        // Also check ~/.local/bin (pip/pipx installs on Linux)
+        if let Ok(home) = std::env::var("HOME") {
+            extra = format!("{}:{}/bin:{}/.local/bin", extra, home, home);
+        }
+        extra
     };
 
     // Step 1: Extract mermaid blocks, render to PNG via mermaid.ink API
@@ -613,9 +630,23 @@ async fn export_docx(markdown_content: String, output_path: String) -> Result<St
 
             let sys_path = std::env::var("PATH").unwrap_or_default();
             let path_env = if cfg!(target_os = "windows") {
-                format!("{};C:\\Program Files\\MiKTeX\\miktex\\bin\\x64;C:\\texlive\\2024\\bin\\windows;C:\\texlive\\2025\\bin\\windows", sys_path)
+                let mut extra = format!(
+                    "{};C:\\Program Files\\Pandoc;C:\\Program Files\\MiKTeX\\miktex\\bin\\x64;C:\\texlive\\2024\\bin\\windows;C:\\texlive\\2025\\bin\\windows",
+                    sys_path
+                );
+                if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+                    extra = format!("{};{}\\Pandoc", extra, local_app);
+                }
+                extra
             } else {
-                format!("{}:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin", sys_path)
+                let mut extra = format!(
+                    "{}:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin",
+                    sys_path
+                );
+                if let Ok(home) = std::env::var("HOME") {
+                    extra = format!("{}:{}/bin:{}/.local/bin", extra, home, home);
+                }
+                extra
             };
 
             let stderr_file = tmp_dir.join("pandoc_stderr.log");
