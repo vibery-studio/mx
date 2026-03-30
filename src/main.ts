@@ -3524,10 +3524,11 @@ async function doUpdateCheck(manual: boolean) {
     }
   } catch (e) {
     console.error("Update check failed:", e);
-    if (manual && statusWords) {
-      statusWords.textContent = "Update check failed";
-      statusWords.style.color = "var(--error)";
-      setTimeout(() => { statusWords.textContent = ""; statusWords.style.color = ""; }, 3000);
+    if (statusWords) {
+      const errMsg = String(e).length > 120 ? String(e).slice(0, 120) + "…" : String(e);
+      statusWords.textContent = manual ? `Update failed: ${errMsg}` : "";
+      statusWords.style.color = manual ? "var(--error)" : "";
+      if (manual) setTimeout(() => { statusWords.textContent = ""; statusWords.style.color = ""; }, 8000);
     }
   }
 }
